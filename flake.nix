@@ -15,8 +15,7 @@
         "x86_64-darwin"
       ];
 
-      forAllSystems =
-        f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
+      forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
     in
     {
       packages = forAllSystems (pkgs: rec {
@@ -67,6 +66,13 @@
           touch $out
         '';
 
+        format = pkgs.runCommand "hue-grpc-format" { nativeBuildInputs = [ pkgs.nixfmt ]; } ''
+          cd ${self}
+          # Passing a directory to nixfmt is deprecated, so enumerate files.
+          find . -name '*.nix' -exec nixfmt --check {} +
+          touch $out
+        '';
+
         typecheck =
           pkgs.runCommand "hue-grpc-typecheck"
             {
@@ -88,7 +94,7 @@
             '';
       });
 
-      formatter = forAllSystems (pkgs: pkgs.nixfmt-rfc-style);
+      formatter = forAllSystems (pkgs: pkgs.nixfmt);
 
       nixosModules = rec {
         hue-grpc = import ./nix/module.nix self;
