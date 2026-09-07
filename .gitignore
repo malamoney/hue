@@ -1,0 +1,21 @@
+# Nix build outputs
+result
+result-*
+.direnv/
+
+# Generated protobuf code. Produced by the generator during the Nix build and
+# on dev shell entry, never committed. See docs/adr/0001.
+/src/hue_grpc/proto/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Editor
+.vscode/
+
+# macOS
+.DS_Store

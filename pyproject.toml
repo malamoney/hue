@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hue-grpc"
+description = "Exposes a subset of the Philips Hue CLIP v2 API over gRPC."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dynamic = ["version"]
+
+# Deliberately no zeroconf: mDNS discovery is out of scope, the bridge
+# address is static configuration. See docs/adr/ and the project CONTEXT.md.
+dependencies = [
+  "grpcio",
+  "protobuf",
+  "httpx",
+]
+
+[project.scripts]
+hue-grpc-server = "hue_grpc.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "hue_grpc.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 88
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src", "tests"]
+mypy_path = "src"
