@@ -79,7 +79,7 @@ def test_ref_becomes_a_message_reference_and_the_target_is_emitted() -> None:
         roots=["M"],
     )
 
-    assert "optional On on = 1;" in out
+    assert "optional .hue.v1.On on = 1;" in out
     assert "message On {" in out
 
 
@@ -174,3 +174,138 @@ def test_a_transitively_referenced_schema_is_emitted_once() -> None:
     )
 
     assert out.count("message Shared {") == 1
+
+
+def test_ref_to_a_scalar_schema_inlines_the_scalar() -> None:
+    """A $ref target with no properties is not a message.
+
+    Emitting an empty message here would silently drop the value: Hue's
+    Brightness is a bare number, and a fieldless message cannot carry it.
+    """
+    out = build(
+        {
+            "M": {
+                "type": "object",
+                "properties": {
+                    "brightness": {"$ref": "#/components/schemas/Brightness"}
+                },
+            },
+            "Brightness": {"type": "number", "minimum": 0, "maximum": 100},
+        },
+        roots=["M"],
+    )
+
+    assert "optional double brightness = 1;" in out
+    assert "message Brightness" not in out
+
+
+def test_ref_to_an_enum_schema_becomes_a_top_level_enum() -> None:
+    out = build(
+        {
+            "M": {
+                "type": "object",
+                "properties": {"archetype": {"$ref": "#/components/schemas/Archetype"}},
+            },
+            "Archetype": {"type": "string", "enum": ["bollard", "ceiling_round"]},
+        },
+        roots=["M"],
+    )
+
+    assert "enum Archetype {" in out
+    assert "ARCHETYPE_UNSPECIFIED = 0;" in out
+    assert "ARCHETYPE_BOLLARD = 1;" in out
+    assert "optional .hue.v1.Archetype archetype = 1;" in out
+    assert "message Archetype" not in out
+
+
+def test_component_ref_is_qualified_so_a_nested_message_cannot_capture_it() -> None:
+    """Protobuf resolves names innermost-first, C++ style.
+
+    An inline object named `On` nested inside the message would otherwise
+    capture a reference meant for the top-level `On`, making the field
+    self-recursive and the real value unreachable.
+    """
+    out = build(
+        {
+            "M": {
+                "type": "object",
+                "properties": {
+                    "on": {
+                        "type": "object",
+                        "properties": {"on": {"$ref": "#/components/schemas/On"}},
+                    }
+                },
+            },
+            "On": {"type": "object", "properties": {"on": {"type": "boolean"}}},
+        },
+        roots=["M"],
+    )
+
+    assert "optional .hue.v1.On on = 1;" in out
+
+
+def test_property_wrapped_in_allof_is_resolved() -> None:
+    """`{allOf: [{$ref: ...}], description: ...}` is a common OpenAPI idiom."""
+    out = build(
+        {
+            "M": {
+                "type": "object",
+                "properties": {
+                    "a": {
+                        "allOf": [{"$ref": "#/components/schemas/Thing"}],
+                        "description": "wrapped",
+                    }
+                },
+            },
+            "Thing": {"type": "string"},
+        },
+        roots=["M"],
+    )
+
+    assert "optional string a = 1;" in out
+
+
+def test_array_items_wrapped_in_allof_is_resolved() -> None:
+    out = build(
+        {
+            "M": {
+                "type": "object",
+                "properties": {
+                    "xs": {
+                        "type": "array",
+                        "items": {"allOf": [{"$ref": "#/components/schemas/Thing"}]},
+                    }
+                },
+            },
+            "Thing": {"type": "string"},
+        },
+        roots=["M"],
+    )
+
+    assert "repeated string xs = 1;" in out
+
+
+def test_enum_values_that_normalise_identically_are_rejected() -> None:
+    with pytest.raises(ValueError, match="duplicate"):
+        build(
+            {
+                "M": {
+                    "type": "object",
+                    "properties": {
+                        "a": {"type": "string", "enum": ["on_off", "on-off"]}
+                    },
+                }
+            }
+        )
+
+
+def test_non_string_enum_values_are_rejected_clearly() -> None:
+    with pytest.raises(ValueError, match="non-string"):
+        build(
+            {
+                "M": {
+                    "type": "object",
+                    "properties": {"a": {"type": "integer", "enum": [1, 2]}},
+                }
+            }
+        )

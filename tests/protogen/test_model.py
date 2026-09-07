@@ -119,3 +119,27 @@ def test_field_numbers_are_unique_across_oneofs_and_plain_fields() -> None:
             fields=(Field("a", "string", 1),),
             oneofs=(OneOf(name="g", fields=(Field("b", "string", 1),)),),
         )
+
+
+def test_duplicate_enum_value_names_are_rejected() -> None:
+    with pytest.raises(ValueError, match="duplicate"):
+        Enum(
+            name="E",
+            values=(
+                EnumValue("E_UNSPECIFIED", 0),
+                EnumValue("E_A", 1),
+                EnumValue("E_A", 2),
+            ),
+        )
+
+
+def test_duplicate_enum_numbers_are_rejected() -> None:
+    with pytest.raises(ValueError, match="duplicate"):
+        Enum(
+            name="E",
+            values=(
+                EnumValue("E_UNSPECIFIED", 0),
+                EnumValue("E_A", 1),
+                EnumValue("E_B", 1),
+            ),
+        )

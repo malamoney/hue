@@ -93,6 +93,18 @@ class Enum:
         if not any(value.number == 0 for value in self.values):
             raise ValueError(f"{self.name}: enum needs a zero value (UNSPECIFIED)")
 
+        names = [value.name for value in self.values]
+        if len(set(names)) != len(names):
+            clashing = sorted({n for n in names if names.count(n) > 1})
+            raise ValueError(f"{self.name}: duplicate enum value name(s) {clashing}")
+
+        numbers = [value.number for value in self.values]
+        if len(set(numbers)) != len(numbers):
+            clashing_numbers = sorted({n for n in numbers if numbers.count(n) > 1})
+            raise ValueError(
+                f"{self.name}: duplicate enum number(s) {clashing_numbers}"
+            )
+
     def render(self, depth: int) -> list[str]:
         lines: list[str] = []
         if self.comment:

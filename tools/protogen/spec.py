@@ -27,13 +27,17 @@ class _SpecLoader(yaml.SafeLoader):  # type: ignore[misc]
     """
 
 
+# The empty-string key exists for empty scalars, so this must be a set
+# membership test: `"" in "oOyYnN"` is True and would widen the filter.
+_BOOL_WORD_INITIALS = frozenset("oOyYnN")
+
 # Implicit resolvers are keyed by the token's first character, so dropping the
 # bool resolver for o/y/n leaves true/false (t/f) untouched.
 _SpecLoader.yaml_implicit_resolvers = {
     char: [
         (tag, regexp)
         for tag, regexp in resolvers
-        if not (char in "oOyYnN" and tag == "tag:yaml.org,2002:bool")
+        if not (char in _BOOL_WORD_INITIALS and tag == "tag:yaml.org,2002:bool")
     ]
     for char, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
 }
