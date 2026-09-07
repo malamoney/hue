@@ -1,7 +1,7 @@
 {
   description = "Gateway exposing a subset of the Philips Hue CLIP v2 API over gRPC";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
 
   outputs =
     { self, nixpkgs }:
