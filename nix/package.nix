@@ -26,6 +26,9 @@ buildPythonApplication {
       ../README.md
       ../src
       ../tests
+      # The version-drift guard in tests/unit/test_packaging.py reads this
+      # file, so it must exist inside the build source too.
+      ../nix/package.nix
     ];
   };
 

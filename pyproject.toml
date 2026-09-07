@@ -29,7 +29,8 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+# No pythonpath entry on purpose: under Nix the check phase must exercise the
+# installed package, not the source tree. The dev shell exports PYTHONPATH.
 
 [tool.ruff]
 line-length = 88

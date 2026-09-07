@@ -19,6 +19,10 @@ nix flake check      # tests, lint, typecheck, package build
 nix build            # ./result/bin/hue-grpc-server
 ```
 
+Run `pytest` from inside `nix develop`: the dev shell puts `src/` on
+`PYTHONPATH`, which `pyproject.toml` deliberately does not do, so that the Nix
+check phase exercises the installed package instead of the source tree.
+
 Unit tests are pure Python and run on macOS. The package targets
 `x86_64-linux`; NixOS VM tests run in CI, since no fast native x86_64-linux
 builder is available locally.

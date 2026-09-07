@@ -48,6 +48,9 @@
           ];
 
           shellHook = ''
+            # pyproject deliberately sets no pytest pythonpath, so that the
+            # Nix check phase tests the installed package rather than ./src.
+            export PYTHONPATH="$PWD/src''${PYTHONPATH:+:$PYTHONPATH}"
             echo "hue-grpc dev shell - pytest, ruff, mypy, protoc available"
           '';
         };
