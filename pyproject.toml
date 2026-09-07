@@ -28,7 +28,9 @@ version = { attr = "hue_grpc.__version__" }
 where = ["src"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+# Only the runtime package's tests. The generator under tools/ is build
+# tooling with its own dependencies and its own flake check.
+testpaths = ["tests/unit"]
 # No pythonpath entry on purpose: under Nix the check phase must exercise the
 # installed package, not the source tree. The dev shell exports PYTHONPATH.
 
@@ -42,5 +44,10 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["src", "tests"]
-mypy_path = "src"
+files = ["src", "tests", "tools"]
+mypy_path = "src:tools"
+
+# PyYAML ships no type information.
+[[tool.mypy.overrides]]
+module = "yaml.*"
+ignore_missing_imports = true
