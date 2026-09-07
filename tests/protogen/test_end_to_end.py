@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -82,3 +83,25 @@ def test_protoc_accepts_the_generated_file(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_cli_writes_and_reuses_the_number_lock(tmp_path: Path) -> None:
+    lock = tmp_path / "field-numbers.json"
+    out = tmp_path / "lighting.proto"
+    args = [
+        "--spec",
+        str(SPEC),
+        "--out",
+        str(out),
+        "--numbers",
+        str(lock),
+        "--root",
+        "LightPut",
+    ]
+
+    assert main(args) == 0
+    first = json.loads(lock.read_text())
+
+    assert main(args) == 0
+
+    assert json.loads(lock.read_text()) == first

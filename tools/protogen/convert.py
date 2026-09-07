@@ -24,6 +24,7 @@ from typing import Any, Literal
 
 from protogen.model import Enum, EnumValue, Field, Message, ProtoFile
 from protogen.naming import enum_value_name, pascal_case
+from protogen.numbering import FieldNumbers
 from protogen.spec import flatten_schema
 
 REF = "$ref"
@@ -106,9 +107,12 @@ def _build_enum(name: str, values: list[Any]) -> Enum:
 
 
 class _Converter:
-    def __init__(self, spec: dict[str, Any], package: str) -> None:
+    def __init__(
+        self, spec: dict[str, Any], package: str, numbers: FieldNumbers
+    ) -> None:
         self._spec = spec
         self._package = package
+        self._numbers = numbers
         self._messages: dict[str, Message] = {}
         self._enums: dict[str, Enum] = {}
         self._pending: list[str] = []
@@ -129,26 +133,29 @@ class _Converter:
         if kind == "enum":
             self._enums[proto_name] = _build_enum(proto_name, schema["enum"])
         elif kind == "message":
-            self._messages[proto_name] = self._message(proto_name, schema)
+            self._messages[proto_name] = self._message(
+                proto_name, schema, scope=proto_name
+            )
         # A scalar component carries no declaration: it is inlined at each use.
 
-    def _message(self, name: str, schema: dict[str, Any]) -> Message:
+    def _message(self, name: str, schema: dict[str, Any], *, scope: str) -> Message:
         required = set(schema.get("required", []))
         fields: list[Field] = []
         enums: list[Enum] = []
         nested: list[Message] = []
 
-        for number, (prop_name, prop_schema) in enumerate(
-            schema.get("properties", {}).items(), start=1
-        ):
+        for prop_name, prop_schema in schema.get("properties", {}).items():
             fields.append(
                 self._convert_property(
                     prop_name,
                     prop_schema,
-                    number=number,
+                    # Numbers come from the committed lock file, never from
+                    # the order properties happen to appear in the spec.
+                    number=self._numbers.assign(scope, prop_name),
                     required=prop_name in required,
                     enums=enums,
                     nested=nested,
+                    scope=scope,
                 )
             )
 
@@ -169,6 +176,7 @@ class _Converter:
         required: bool,
         enums: list[Enum],
         nested: list[Message],
+        scope: str,
     ) -> Field:
         if _single_ref(schema) is None:
             # Only flatten when this is not a reference: flattening resolves
@@ -176,14 +184,16 @@ class _Converter:
             schema = flatten_schema(self._spec, schema)
 
         if schema.get("type") == "array":
-            item_type = self._type_of(name, schema.get("items", {}), enums, nested)
+            item_type = self._type_of(
+                name, schema.get("items", {}), enums, nested, scope
+            )
             # Never optional: proto3 rejects it, and an empty list already
             # means "absent" for a repeated field.
             return Field(name, item_type, number, repeated=True)
 
         return Field(
             name,
-            self._type_of(name, schema, enums, nested),
+            self._type_of(name, schema, enums, nested, scope),
             number,
             optional=not required,
         )
@@ -194,6 +204,7 @@ class _Converter:
         schema: dict[str, Any],
         enums: list[Enum],
         nested: list[Message],
+        scope: str,
     ) -> str:
         ref = _single_ref(schema)
         if ref is not None:
@@ -206,7 +217,8 @@ class _Converter:
             enums.append(enum)
             return enum.name
         if kind == "message":
-            message = self._message(pascal_case(name), schema)
+            nested_name = pascal_case(name)
+            message = self._message(nested_name, schema, scope=f"{scope}.{nested_name}")
             nested.append(message)
             return message.name
         return _scalar_type(name, schema)
@@ -236,9 +248,12 @@ def convert_document(
     *,
     package: str,
     header: str | None = None,
+    numbers: FieldNumbers | None = None,
 ) -> ProtoFile:
     """Convert `roots` and everything they reference into one proto file."""
-    messages, enums = _Converter(spec, package).convert(roots)
+    messages, enums = _Converter(spec, package, numbers or FieldNumbers()).convert(
+        roots
+    )
     return ProtoFile(
         package=package,
         messages=tuple(messages),

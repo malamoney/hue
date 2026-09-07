@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 from protogen.convert import convert_document
+from protogen.numbering import FieldNumbers
 
 SPEC: dict[str, Any] = {"components": {"schemas": {}}}
 
@@ -309,3 +310,40 @@ def test_non_string_enum_values_are_rejected_clearly() -> None:
                 }
             }
         )
+
+
+def test_numbering_survives_a_property_inserted_upstream() -> None:
+    """A spec edit must not renumber fields that are already deployed.
+
+    Without the lock file, inserting `inserted` here would push `b` from 2 to
+    3, and a client built against the old definitions would read the new
+    field's bytes as `b`.
+    """
+    numbers = FieldNumbers()
+    first = {
+        "M": {
+            "type": "object",
+            "properties": {"a": {"type": "string"}, "b": {"type": "string"}},
+        }
+    }
+    convert_document(
+        {"components": {"schemas": first}}, ["M"], package="hue.v1", numbers=numbers
+    )
+
+    revised = {
+        "M": {
+            "type": "object",
+            "properties": {
+                "a": {"type": "string"},
+                "inserted": {"type": "string"},
+                "b": {"type": "string"},
+            },
+        }
+    }
+    out = convert_document(
+        {"components": {"schemas": revised}}, ["M"], package="hue.v1", numbers=numbers
+    ).render()
+
+    assert "optional string a = 1;" in out
+    assert "optional string b = 2;" in out
+    assert "optional string inserted = 3;" in out
