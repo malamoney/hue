@@ -20,10 +20,10 @@ and `$XDG_STATE_HOME/hue-grpc` outside it, so the two commands cannot be
 pointed at different files by mistake.
 
 A declaratively-installed Gateway does not pair. `--bridge-address`,
-`--bridge-id` and `--hue-credentials-file` describe one Bridge outright — the
-first two are configuration, the third a runtime credential holding the
+`--bridge-id` and `--credentials-file` describe one Bridge outright — the
+first two are configuration, the third a Credentials File holding the
 Application Key — and when they are set the Registry file is not read at all.
-`hue_grpc.bridge_config` is where that path lives.
+`hue_grpc.static_registry` is where that path lives.
 """
 
 from __future__ import annotations
@@ -37,11 +37,6 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from hue_grpc import __version__
-from hue_grpc.bridge_config import (
-    CredentialsFileError,
-    load_hue_credentials,
-    static_entry,
-)
 from hue_grpc.events.fanout import DEFAULT_QUEUE_SIZE, EventFanout
 from hue_grpc.events.service import hosted_event_service
 from hue_grpc.hue import pairing
@@ -69,6 +64,11 @@ from hue_grpc.serving.config import (
     read_gateway_token,
 )
 from hue_grpc.serving.serve import serve
+from hue_grpc.static_registry import (
+    CredentialsFileError,
+    load_bridge_credentials,
+    static_entry,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -119,9 +119,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     static = parser.add_argument_group(
         "static bridge",
-        "Point the gateway at one bridge by configuration instead of pairing. "
+        "Describe one bridge by configuration instead of pairing. "
         "--bridge-address turns this on; it then also needs --bridge-id and "
-        "--hue-credentials-file, and the registry file is left untouched.",
+        "--credentials-file, and the registry file is left untouched.",
     )
     static.add_argument(
         "--bridge-address",
@@ -136,12 +136,12 @@ def build_parser() -> argparse.ArgumentParser:
         "certificate the bridge presents",
     )
     static.add_argument(
-        "--hue-credentials-file",
+        "--credentials-file",
         type=Path,
         metavar="PATH",
-        help="file of key=value lines holding application-key and, optionally, "
-        "client-key. A file, never a flag value; under systemd a LoadCredential "
-        "path.",
+        help="a Credentials File: key=value lines holding application-key and, "
+        "optionally, client-key. A file, never a flag value; under systemd a "
+        "LoadCredential path.",
     )
 
     parser.add_argument(
@@ -291,37 +291,27 @@ def _static_bridge_entry(args: argparse.Namespace) -> RegistryEntry | None:
     `None` means no static bridge was configured, so the Registry file is the
     source of truth. A `ValueError` or `CredentialsFileError` means one was
     configured but cannot be used — a half-given set of flags, or an
-    unreadable credentials file — and the caller turns that into a one-line
+    unreadable Credentials File — and the caller turns that into a one-line
     exit rather than a traceback.
     """
+    companions = (
+        ("--bridge-id", args.bridge_id),
+        ("--credentials-file", args.credentials_file),
+    )
     if args.bridge_address is None:
-        stray = [
-            flag
-            for flag, value in (
-                ("--bridge-id", args.bridge_id),
-                ("--hue-credentials-file", args.hue_credentials_file),
-            )
-            if value is not None
-        ]
+        stray = [flag for flag, value in companions if value is not None]
         if stray:
             raise ValueError(
                 f"{' and '.join(stray)} only applies with --bridge-address"
             )
         return None
-    missing = [
-        flag
-        for flag, value in (
-            ("--bridge-id", args.bridge_id),
-            ("--hue-credentials-file", args.hue_credentials_file),
-        )
-        if value is None
-    ]
+    missing = [flag for flag, value in companions if value is None]
     if missing:
         raise ValueError(f"--bridge-address also needs {' and '.join(missing)}")
     return static_entry(
         bridge_id=args.bridge_id,
         address=args.bridge_address,
-        credentials=load_hue_credentials(args.hue_credentials_file),
+        credentials=load_bridge_credentials(args.credentials_file),
     )
 
 

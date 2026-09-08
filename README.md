@@ -239,23 +239,26 @@ The flake exports `nixosModules.default`. A minimal host:
 ```
 
 `enable` builds a hardened systemd unit — `DynamicUser`, `StateDirectory`,
-`ProtectSystem=strict`, and the rest — that runs the gateway as
-`hue-grpc.service`. The listener defaults to `127.0.0.1:50051`; `port` and
+`ProtectSystem=strict`, and the rest — that runs the Gateway as
+`hue-grpc.service`. The Listener defaults to `127.0.0.1:50051`; `port` and
 `openFirewall` adjust that, and a non-loopback `listenAddress` is refused at
 build time without `grpc.tls.enable` and `grpc.tokenFile`, the same rule the
 server enforces on startup.
 
-`bridge.*` points the gateway at one bridge without pairing or discovery: the
-address and id are configuration, and the Application Key is handed over by
-`credentialsFile`, loaded through systemd `LoadCredential`. That path — along
-with `grpc.tls.privateKeyFile` and `grpc.tokenFile` — is the only way a
-secret reaches the service: never an `ExecStart` argument, a Nix-rendered
-environment variable, or anything else that lands in the store. It can come
-from `sops-nix`, `agenix`, or a root-owned file under `/run/secrets`. When
-`bridge.*` is set the registry file is not read at all; leaving it unset
-falls back to a paired `registry.json` under the state directory, which for
-now is written by running `hue-grpc-server pair` (see [Pairing](#pairing))
-against the same state directory.
+`bridge.*` describes one Bridge without pairing or discovery: the address and
+id are configuration, and the Application Key comes from the Credentials File
+named by `bridge.credentialsFile`, loaded through systemd `LoadCredential`.
+That path — with `grpc.tls.privateKeyFile` and `grpc.tokenFile` — is the only
+way a secret reaches the service: never an `ExecStart` argument, a
+Nix-rendered environment variable, or anything else that lands in the store.
+It can come from `sops-nix`, `agenix`, or a root-owned file under
+`/run/secrets`. When `bridge.*` is set the Registry file is not read at all;
+leaving it unset falls back to a paired `registry.json` under the state
+directory, written for now by running `hue-grpc-server pair` (see
+[Pairing](#pairing)) against that same directory.
+
+Everything the module does not surface — `--reflection`, `--log-level`, the
+event queue size — is reachable through `extraArgs`.
 
 The aggressive half of the sandbox — a syscall filter, tighter namespace and
 capability limits — is a later pass, tested against a booted VM.

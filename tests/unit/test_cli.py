@@ -420,7 +420,7 @@ def test_static_flags_build_an_entry_and_skip_the_registry(
             "192.168.86.5",
             "--bridge-id",
             BRIDGE_ID,
-            "--hue-credentials-file",
+            "--credentials-file",
             str(credentials),
         ]
     )
@@ -442,7 +442,7 @@ def test_a_static_bridge_without_its_id_is_a_line_not_a_traceback(
     assert exit_info.value.code == 2
     printed = capsys.readouterr().err
     assert "--bridge-id" in printed
-    assert "--hue-credentials-file" in printed
+    assert "--credentials-file" in printed
     assert "Traceback" not in printed
 
 
@@ -450,7 +450,7 @@ def test_credentials_file_without_a_bridge_address_is_refused(
     capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
     with pytest.raises(SystemExit) as exit_info:
-        main(["--hue-credentials-file", str(tmp_path / "creds")])
+        main(["--credentials-file", str(tmp_path / "creds")])
 
     assert exit_info.value.code == 2
     assert "only applies with --bridge-address" in capsys.readouterr().err
@@ -466,7 +466,7 @@ def test_an_unreadable_credentials_file_stops_the_gateway_with_a_line(
                 "192.168.86.5",
                 "--bridge-id",
                 BRIDGE_ID,
-                "--hue-credentials-file",
+                "--credentials-file",
                 str(tmp_path / "absent"),
             ]
         )
@@ -499,7 +499,7 @@ def test_the_binary_serves_a_statically_configured_bridge(
                 "127.0.0.1:1",
                 "--bridge-id",
                 BRIDGE_ID,
-                "--hue-credentials-file",
+                "--credentials-file",
                 str(credentials),
             ],
             stdout=log,

@@ -1,15 +1,15 @@
-"""The bridge a declaratively-installed Gateway talks to.
+"""A Registry Entry built from configuration instead of from the file.
 
 A Gateway installed from the NixOS module has no Registry file and never runs
 `pair`. It is told which Bridge to reach by configuration — the address and
-the Bridge ID, neither of them secret — and handed the Application Key by a
-systemd credential, a file that exists only while the unit runs and never
-lands in the Nix store.
+the Bridge ID, neither of them secret — and handed the Bridge's secrets by a
+Credentials File, a systemd credential that exists only while the unit runs
+and never lands in the Nix store.
 
-This module turns those two things into the same `RegistryEntry` the rest of
-the Gateway already serves, without reading or writing `registry.json`. The
-two are deliberately separate modes: `--bridge-address` selects this one, and
-when it is set the Registry file is not consulted at all.
+This module turns those into the same `RegistryEntry` the rest of the Gateway
+already serves, without reading or writing `registry.json`. The two are
+separate modes: `--bridge-address` selects this one, and when it is set the
+Registry file is not consulted at all.
 """
 
 from __future__ import annotations
@@ -22,13 +22,13 @@ from hue_grpc.registry import RegistryEntry
 __all__ = [
     "APPLICATION_KEY",
     "CLIENT_KEY",
+    "BridgeCredentials",
     "CredentialsFileError",
-    "HueCredentials",
-    "load_hue_credentials",
+    "load_bridge_credentials",
     "static_entry",
 ]
 
-#: The one required key in the credentials file: the `hue-application-key`
+#: The one required key in the Credentials File: the `hue-application-key`
 #: header value, minted by an earlier Pairing done somewhere else.
 APPLICATION_KEY = "application-key"
 
@@ -36,11 +36,11 @@ APPLICATION_KEY = "application-key"
 #: Pairing that minted the Application Key did not ask for one.
 CLIENT_KEY = "client-key"
 
-_KNOWN_KEYS = frozenset({APPLICATION_KEY, CLIENT_KEY})
+_KNOWN_KEYS = (APPLICATION_KEY, CLIENT_KEY)
 
 
 class CredentialsFileError(Exception):
-    """The Hue credentials file is missing, unreadable, or malformed.
+    """The Credentials File is missing, unreadable, or malformed.
 
     Raised on the way up, before anything binds, so a unit that can never
     reach its Bridge says why in the first line of its journal rather than
@@ -49,8 +49,8 @@ class CredentialsFileError(Exception):
 
 
 @dataclass(frozen=True, repr=False)
-class HueCredentials:
-    """The secrets a static bridge needs, read from a runtime credential."""
+class BridgeCredentials:
+    """The secrets a statically configured Bridge needs."""
 
     application_key: str
     client_key: str | None = None
@@ -58,23 +58,24 @@ class HueCredentials:
     def __repr__(self) -> str:
         """Neither secret in the string: credentials travel through tracebacks."""
         client = "<redacted>" if self.client_key is not None else None
-        return f"HueCredentials(application_key=<redacted>, client_key={client})"
+        return f"BridgeCredentials(application_key=<redacted>, client_key={client})"
 
 
-def load_hue_credentials(path: Path) -> HueCredentials:
-    """Parse `path`, a file of `key=value` lines, into `HueCredentials`.
+def load_bridge_credentials(path: Path) -> BridgeCredentials:
+    """Parse `path`, a Credentials File of `key=value` lines.
 
-    Blank lines and lines starting with `#` are ignored. Keys are matched
-    case-insensitively with `_` and `-` treated alike, so both
-    `application-key` and `application_key` work. An unknown key is an error
-    rather than a warning: it is as likely to be a typo hiding a secret the
-    Gateway needed as it is to be harmless.
+    Blank lines and lines starting with `#` are ignored and surrounding
+    whitespace is stripped, because the file is written by hand or by a
+    secrets tool. The keys are `application-key` and, optionally,
+    `client-key`, spelled exactly; an unknown key is an error rather than a
+    warning, since it is as likely to be a typo hiding a key the Gateway
+    needed as it is to be harmless.
     """
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as unreadable:
         raise CredentialsFileError(
-            f"could not read hue credentials file {path}: {unreadable}"
+            f"could not read credentials file {path}: {unreadable}"
         ) from unreadable
 
     values: dict[str, str] = {}
@@ -87,11 +88,11 @@ def load_hue_credentials(path: Path) -> HueCredentials:
             raise CredentialsFileError(
                 f"{path}:{number}: expected key=value, got {raw!r}"
             )
-        name = key.strip().lower().replace("_", "-")
+        name = key.strip()
         if name not in _KNOWN_KEYS:
             raise CredentialsFileError(
-                f"{path}:{number}: unknown key {key.strip()!r}; "
-                f"expected one of {', '.join(sorted(_KNOWN_KEYS))}"
+                f"{path}:{number}: unknown key {name!r}; expected one of "
+                f"{', '.join(_KNOWN_KEYS)}"
             )
         if name in values:
             raise CredentialsFileError(f"{path}:{number}: {name} set twice")
@@ -99,16 +100,16 @@ def load_hue_credentials(path: Path) -> HueCredentials:
 
     if not values.get(APPLICATION_KEY):
         raise CredentialsFileError(f"{path}: no {APPLICATION_KEY}")
-    return HueCredentials(
+    return BridgeCredentials(
         application_key=values[APPLICATION_KEY],
         client_key=values.get(CLIENT_KEY) or None,
     )
 
 
 def static_entry(
-    *, bridge_id: str, address: str, credentials: HueCredentials
+    *, bridge_id: str, address: str, credentials: BridgeCredentials
 ) -> RegistryEntry:
-    """A `RegistryEntry` for a bridge described by configuration.
+    """A `RegistryEntry` for a Bridge described by configuration.
 
     `model`, `firmware` and `last_contact` are unknown until the Bridge has
     been reached, exactly as they are for a freshly paired entry. A

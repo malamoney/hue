@@ -212,61 +212,75 @@
       }
       // nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
         # Issue #13's acceptance short of booting a VM (that is issue #14):
-        # the module evaluates, and the unit it generates carries the named
-        # hardening set, the address-family landmine fix, and secrets that
-        # arrive only by LoadCredential and runtime path.
+        # the module evaluates both ways round, and the unit it generates
+        # carries the named hardening set, the address-family landmine fix,
+        # and secrets that arrive only by LoadCredential and runtime path.
         nixos-module =
           let
-            machine = nixpkgs.lib.nixosSystem {
-              inherit (pkgs) system;
-              modules = [
-                self.nixosModules.default
-                {
-                  boot.isContainer = true;
-                  system.stateVersion = "26.05";
-                  services.hue-grpc = {
-                    enable = true;
-                    bridge = {
-                      address = "192.168.86.223";
-                      id = "ECB5FAFFFE334703";
-                      credentialsFile = "/run/secrets/hue-grpc";
-                    };
-                  };
-                }
-              ];
+            unitOf =
+              extra:
+              (nixpkgs.lib.nixosSystem {
+                inherit (pkgs) system;
+                modules = [
+                  self.nixosModules.default
+                  {
+                    boot.isContainer = true;
+                    system.stateVersion = "26.05";
+                    services.hue-grpc = { enable = true; } // extra;
+                  }
+                ];
+              }).config.systemd.units."hue-grpc.service".unit;
+
+            configured = unitOf {
+              bridge = {
+                address = "192.168.86.223";
+                id = "ECB5FAFFFE334703";
+                credentialsFile = "/run/secrets/hue-grpc";
+              };
             };
-            unit = machine.config.systemd.units."hue-grpc.service".unit;
+            bare = unitOf { };
           in
           pkgs.runCommand "hue-grpc-nixos-module" { } ''
-            service="${unit}/hue-grpc.service"
-            cat "$service"
+            configured="${configured}/hue-grpc.service"
+            bare="${bare}/hue-grpc.service"
+            echo "=== configured ==="; cat "$configured"
+            echo "=== bare ===";       cat "$bare"
 
-            for directive in \
-              'DynamicUser=true' \
-              'StateDirectory=hue-grpc' \
-              'StateDirectoryMode=0700' \
-              'NoNewPrivileges=true' \
-              'PrivateTmp=true' \
-              'ProtectSystem=strict' \
-              'ProtectHome=true' \
-              'ProtectKernelTunables=true' \
-              'ProtectKernelModules=true' \
-              'ProtectControlGroups=true' \
-              'Restart=on-failure' \
-              'RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX'
-            do
-              grep -qF "$directive" "$service" \
-                || { echo "unit is missing: $directive" >&2; exit 1; }
+            want() {
+              grep -qF -- "$2" "$1" || { echo "$1 is missing: $2" >&2; exit 1; }
+            }
+            deny() {
+              if grep -qF -- "$2" "$1"; then
+                echo "$1 should not have: $2" >&2
+                exit 1
+              fi
+            }
+
+            for service in "$configured" "$bare"; do
+              want "$service" 'DynamicUser=true'
+              want "$service" 'StateDirectory=hue-grpc'
+              want "$service" 'StateDirectoryMode=0700'
+              want "$service" 'NoNewPrivileges=true'
+              want "$service" 'PrivateTmp=true'
+              want "$service" 'ProtectSystem=strict'
+              want "$service" 'ProtectHome=true'
+              want "$service" 'ProtectKernelTunables=true'
+              want "$service" 'ProtectKernelModules=true'
+              want "$service" 'ProtectControlGroups=true'
+              want "$service" 'Restart=on-failure'
+              want "$service" 'RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX'
             done
 
-            # Secrets: loaded as credentials, referenced by the %d runtime
-            # path, and the credentials source never rendered into an argument.
-            grep -qF 'LoadCredential=hue-credentials:/run/secrets/hue-grpc' "$service"
-            grep -qF -- '--hue-credentials-file %d/hue-credentials' "$service"
+            # Configured: the secret arrives as a credential, is referenced by
+            # the %d runtime path, and its source is never rendered as an arg.
+            want "$configured" 'LoadCredential=credentials:/run/secrets/hue-grpc'
+            want "$configured" '--credentials-file %d/credentials'
+            want "$configured" '--bridge-address 192.168.86.223'
+            want "$configured" '--bridge-id ECB5FAFFFE334703'
 
-            # Non-secret configuration is rendered in.
-            grep -qF -- '--bridge-address 192.168.86.223' "$service"
-            grep -qF -- '--bridge-id ECB5FAFFFE334703' "$service"
+            # Bare enable: a running listener, no bridge, nothing to load.
+            deny "$bare" '--bridge-address'
+            deny "$bare" 'LoadCredential='
 
             touch $out
           '';

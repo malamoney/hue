@@ -47,13 +47,13 @@ let
     cfg.bridge.address
     "--bridge-id"
     cfg.bridge.id
-    "--hue-credentials-file"
-    "%d/hue-credentials"
+    "--credentials-file"
+    "%d/credentials"
   ];
 
   tlsArgs = [
     "--tls-certificate-file"
-    (toString cfg.grpc.tls.certificateFile)
+    cfg.grpc.tls.certificateFile
     "--tls-private-key-file"
     "%d/tls-key"
   ];
@@ -69,12 +69,6 @@ let
       cfg.listenAddress
       "--port"
       (toString cfg.port)
-      "--reflection"
-      cfg.reflection
-      "--log-level"
-      cfg.logLevel
-      "--log-format"
-      cfg.logFormat
     ]
     ++ lib.optionals hasBridge bridgeArgs
     ++ lib.optionals hasTls tlsArgs
@@ -82,9 +76,9 @@ let
     ++ cfg.extraArgs;
 
   loadCredential =
-    lib.optional hasBridge "hue-credentials:${toString cfg.bridge.credentialsFile}"
-    ++ lib.optional hasTls "tls-key:${toString cfg.grpc.tls.privateKeyFile}"
-    ++ lib.optional hasToken "gateway-token:${toString cfg.grpc.tokenFile}";
+    lib.optional hasBridge "credentials:${cfg.bridge.credentialsFile}"
+    ++ lib.optional hasTls "tls-key:${cfg.grpc.tls.privateKeyFile}"
+    ++ lib.optional hasToken "gateway-token:${cfg.grpc.tokenFile}";
 in
 {
   options.services.hue-grpc = {
@@ -147,13 +141,15 @@ in
     };
 
     bridge.credentialsFile = lib.mkOption {
-      type = lib.types.nullOr lib.types.path;
+      # A runtime path string, never a path literal: a literal would be
+      # copied into the world-readable Nix store, secrets and all.
+      type = lib.types.nullOr lib.types.str;
       default = null;
       example = "/run/secrets/hue-grpc";
       description = ''
-        Path to a file of `key=value` lines holding `application-key` and,
-        optionally, `client-key`. Loaded through systemd `LoadCredential`, so
-        it can live under {file}`/run/secrets` or come from sops-nix or
+        Path to a Credentials File: `key=value` lines holding `application-key`
+        and, optionally, `client-key`. Loaded through systemd `LoadCredential`,
+        so it can live under {file}`/run/secrets` or come from sops-nix or
         agenix; its contents never enter the Nix store. Referenced by runtime
         path only — never inlined into the configuration.
       '';
@@ -166,23 +162,26 @@ in
     };
 
     grpc.tls.certificateFile = lib.mkOption {
-      type = lib.types.nullOr lib.types.path;
+      type = lib.types.nullOr lib.types.str;
       default = null;
-      description = "PEM certificate chain presented to gRPC clients. Not a secret.";
+      description = ''
+        Path to the PEM certificate chain presented to gRPC clients. Not a
+        secret, but a runtime path string for symmetry with the private key.
+      '';
     };
 
     grpc.tls.privateKeyFile = lib.mkOption {
-      type = lib.types.nullOr lib.types.path;
+      type = lib.types.nullOr lib.types.str;
       default = null;
       description = ''
-        PEM private key for
+        Path to the PEM private key for
         {option}`services.hue-grpc.grpc.tls.certificateFile`. Loaded through
         systemd `LoadCredential`; never enters the Nix store.
       '';
     };
 
     grpc.tokenFile = lib.mkOption {
-      type = lib.types.nullOr lib.types.path;
+      type = lib.types.nullOr lib.types.str;
       default = null;
       description = ''
         Path to a file holding the Gateway Token clients must present.
@@ -201,46 +200,18 @@ in
       '';
     };
 
-    reflection = lib.mkOption {
-      type = lib.types.enum [
-        "auto"
-        "on"
-        "off"
-      ];
-      default = "auto";
-      description = ''
-        Serve gRPC reflection. `auto` follows the listener: on for loopback,
-        off otherwise.
-      '';
-    };
-
-    logLevel = lib.mkOption {
-      type = lib.types.enum [
-        "DEBUG"
-        "INFO"
-        "WARNING"
-        "ERROR"
-        "CRITICAL"
-      ];
-      default = "INFO";
-      description = "Root log level.";
-    };
-
-    logFormat = lib.mkOption {
-      type = lib.types.enum [
-        "json"
-        "text"
-      ];
-      default = "json";
-      description = "`json` for the journal, `text` for a terminal.";
-    };
-
     extraArgs = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
+      example = [
+        "--log-format"
+        "text"
+      ];
       description = ''
-        Extra arguments appended to the server command line. An escape hatch;
-        prefer a named option where one exists.
+        Extra arguments appended to the server command line — the way to
+        reach `--reflection`, `--log-level`, `--event-queue-size` and the
+        other operational flags the server documents but this module does
+        not surface.
       '';
     };
   };
