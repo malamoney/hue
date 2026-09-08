@@ -1,0 +1,24 @@
+# The Registry is one plaintext JSON file, replaced atomically, and never read on a guess
+
+The Gateway's record of its Bridge — Bridge ID, address, model, firmware, last successful contact, Application Key, Client Key — lives in a single JSON file at `$STATE_DIRECTORY/registry.json`, mode 0600, carrying a `version` field. It is written by creating a temp file in the same directory, `fsync`-ing it, `os.replace`-ing it over the destination, and then `fsync`-ing the directory. It is read strictly: only a missing file means "nothing is registered", and a file that is damaged, mistyped, or stamped with a version this Gateway does not know is an error by name.
+
+The contents are **not encrypted at rest**, deliberately. With `DynamicUser=true` and `StateDirectory` at 0700, anything that can read the file is already root or the service itself, and a decryption key stored on the same disk would be theatre — it would add a key-management problem and no attacker would be stopped by it.
+
+## Considered Options
+
+- **Encrypt the Application Key at rest.** Rejected, as above: with no external key store in the design, the key has to live next to the ciphertext, which buys nothing but the appearance of protection. It becomes worth revisiting only if the deployment grows somewhere to keep a key that the service can reach and an attacker with disk access cannot — `systemd-creds` with TPM binding is the plausible one.
+- **`systemd-creds` for the secrets and JSON for the metadata.** Rejected for now. It splits one record across two mechanisms with different lifetimes, and `LoadCredentialEncrypted=` is provisioning-shaped: it expects a secret an administrator supplies, not one the service mints for itself at runtime during Pairing.
+- **SQLite.** Rejected. It brings its own atomicity and would be the right answer for many Registry Entries, but the supported subset is one Bridge, and a file a human can `cat` while diagnosing a Bridge that will not answer is worth more here than a schema.
+- **Write in place.** Rejected: a crash mid-write leaves a truncated file, and the entry it destroys costs a walk to the Bridge and a button press to recreate.
+- **Temp file and rename without the directory `fsync`.** Rejected, and it is the subtle one. The renamed file's contents are durable but the rename itself is a directory-metadata change; without flushing the directory a power loss can leave the old name in place, or no name at all. This is the state that has to survive upgrades and rollbacks, which is exactly when machines lose power.
+
+## Consequences
+
+- The file lives outside the Nix store, so a system rollback replaces the store without touching the Registry. That is the whole point of using `StateDirectory` rather than anything derived from the store path.
+- Outside systemd — a developer running the Gateway by hand — state falls back to `$XDG_STATE_HOME/hue-grpc`, because `/var/lib` is not writable by an ordinary user and a Gateway that needs root to keep notes is not testable.
+- `version` is refused rather than tolerated when it is not ours. An older Gateway meeting a file from a newer one stops and says so, instead of reading the fields it recognises and rewriting the file without the ones it does not — which would turn a rollback into silent data loss.
+- **An unreadable Registry is never reported as an empty one.** A Gateway that treated "I could not parse this" as "nothing is registered" would go and Pair again, stranding a working Application Key in the Bridge's app list, where only a human with the Hue app can remove it. The error types (`UnreadableRegistryError`, `UnsupportedRegistryVersionError`) exist so that this distinction cannot be lost by accident.
+- The Bridge ID is normalised to uppercase on the way in, so one Bridge cannot be written down two ways across saves and two entries for it compare equal. [ADR 0002](./0002-bridge-tls-verification.md)'s common-name assertion casefolds both sides and does not need this, so the canonical form is for the Registry's own benefit — comparing entries, and reading the file over someone's shoulder — rather than something the TLS check depends on.
+- Recording last contact rewrites the whole file with two `fsync`s. It is therefore a coarse-grained write — after a reconnect, not after every request — and anything that wants a per-request liveness signal needs to keep it in memory instead.
+- A hard kill between creating the temp file and the rename leaves a dot-prefixed `.registry.json.*.tmp` behind. Nothing sweeps them, because a sweep cannot tell a corpse from another writer's file in flight; they are 0600, inert, and a few hundred bytes each.
+- One writer is assumed. Two Gateways sharing a state directory would race, and nothing here would detect it; that is the same assumption as "one Bridge", and it goes away together with it.
