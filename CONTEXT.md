@@ -42,6 +42,10 @@ _Avoid_: key (unqualified), clientkey, secret
 The bearer token a gRPC client presents to the Gateway. Unrelated to the Bridge; the Bridge never sees it.
 _Avoid_: API key, credential, auth key
 
+**Credentials File**:
+A file of `key=value` lines (`application-key`, optionally `client-key`) that hands the Gateway its Bridge secrets when it is configured statically rather than paired. Loaded by systemd `LoadCredential`, referenced by runtime path only, never in the Nix store. Distinct from the Registry Entry, which is where Pairing writes the same secrets.
+_Avoid_: credentials (unqualified), secrets file, key file
+
 ### Lifecycle
 
 **Pairing**:

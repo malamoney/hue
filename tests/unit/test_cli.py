@@ -383,3 +383,147 @@ def test_the_binary_serves_the_registered_bridge(state_home: Path) -> None:
         if gateway.poll() is None:  # pragma: no cover - only on a failure
             gateway.kill()
             gateway.wait(timeout=30)
+
+
+# Static bridge configuration, which is how the NixOS module drives the server
+
+
+@pytest.fixture
+def captured_entry(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    """Serve without a network: record the entry `main` built and return."""
+    seen: dict[str, object] = {}
+
+    async def fake_serve(
+        config: GatewayConfig, entry: object, *, event_queue_size: int
+    ) -> None:
+        seen["entry"] = entry
+
+    monkeypatch.setattr(cli, "_serve", fake_serve)
+    return seen
+
+
+def test_static_flags_build_an_entry_and_skip_the_registry(
+    captured_entry: dict[str, object], state_home: Path, tmp_path: Path
+) -> None:
+    # An unreadable registry would abort the registry path; static config
+    # never looks at it.
+    state_home.parent.mkdir(parents=True)
+    state_home.write_text("{ not a registry")
+    credentials = tmp_path / "hue-credentials"
+    credentials.write_text("application-key=static-key\nclient-key=static-client\n")
+
+    code = main(
+        [
+            "--port",
+            "0",
+            "--bridge-address",
+            "192.168.86.5",
+            "--bridge-id",
+            BRIDGE_ID,
+            "--credentials-file",
+            str(credentials),
+        ]
+    )
+
+    assert code == 0
+    entry = captured_entry["entry"]
+    assert entry.bridge_id == BRIDGE_ID  # type: ignore[attr-defined]
+    assert entry.address == "192.168.86.5"  # type: ignore[attr-defined]
+    assert entry.application_key == "static-key"  # type: ignore[attr-defined]
+    assert entry.client_key == "static-client"  # type: ignore[attr-defined]
+
+
+def test_a_static_bridge_without_its_id_is_a_line_not_a_traceback(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--bridge-address", "192.168.86.5"])
+
+    assert exit_info.value.code == 2
+    printed = capsys.readouterr().err
+    assert "--bridge-id" in printed
+    assert "--credentials-file" in printed
+    assert "Traceback" not in printed
+
+
+def test_credentials_file_without_a_bridge_address_is_refused(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--credentials-file", str(tmp_path / "creds")])
+
+    assert exit_info.value.code == 2
+    assert "only applies with --bridge-address" in capsys.readouterr().err
+
+
+def test_an_unreadable_credentials_file_stops_the_gateway_with_a_line(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "--bridge-address",
+                "192.168.86.5",
+                "--bridge-id",
+                BRIDGE_ID,
+                "--credentials-file",
+                str(tmp_path / "absent"),
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    printed = capsys.readouterr().err
+    assert "could not read" in printed
+    assert "Traceback" not in printed
+
+
+def test_the_binary_serves_a_statically_configured_bridge(
+    state_home: Path, tmp_path: Path
+) -> None:
+    """As a process, the way the NixOS unit starts it: address and id as
+    flags, the application key from a credentials file, no registry."""
+    credentials = tmp_path / "hue-credentials"
+    credentials.write_text("application-key=an-application-key\n")
+    port = free_port()
+    log_file = tmp_path / "gateway.log"
+    with log_file.open("wb") as log:
+        gateway = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "from hue_grpc.cli import main; raise SystemExit(main())",
+                "--port",
+                str(port),
+                "--bridge-address",
+                # Nothing listens on port 1, and nothing is meant to.
+                "127.0.0.1:1",
+                "--bridge-id",
+                BRIDGE_ID,
+                "--credentials-file",
+                str(credentials),
+            ],
+            stdout=log,
+            stderr=log,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        )
+    try:
+        await_listening_line(log_file, gateway)
+
+        async def scenario() -> grpc.StatusCode:
+            async with grpc.aio.insecure_channel(f"127.0.0.1:{port}") as channel:
+                stub = lighting_grpc.LightingServiceStub(channel)
+                try:
+                    await stub.ListLights(lighting_service_pb2.ListLightsRequest())
+                except grpc.aio.AioRpcError as refused:
+                    return refused.code()
+                raise AssertionError("a bridge on port 1 answered")
+
+        assert run(scenario()) == grpc.StatusCode.UNAVAILABLE
+        assert not state_home.exists()
+
+        gateway.send_signal(signal.SIGTERM)
+        assert gateway.wait(timeout=30) == 0
+    finally:
+        if gateway.poll() is None:  # pragma: no cover - only on a failure
+            gateway.kill()
+            gateway.wait(timeout=30)

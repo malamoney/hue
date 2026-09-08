@@ -218,6 +218,51 @@ listener keeps accepting for `--shutdown-drain` seconds so a client asking can
 be told, then it stops accepting, and calls still in flight have
 `--shutdown-grace` seconds before they are cancelled.
 
+## NixOS
+
+The flake exports `nixosModules.default`. A minimal host:
+
+```nix
+{
+  imports = [ hue-grpc.nixosModules.default ];
+
+  services.hue-grpc = {
+    enable = true;
+    bridge = {
+      address = "192.168.86.223";
+      id = "ECB5FAFFFE334703";
+      # A file of `key=value` lines: application-key=..., optionally client-key=...
+      credentialsFile = "/run/secrets/hue-grpc";
+    };
+  };
+}
+```
+
+`enable` builds a hardened systemd unit — `DynamicUser`, `StateDirectory`,
+`ProtectSystem=strict`, and the rest — that runs the Gateway as
+`hue-grpc.service`. The Listener defaults to `127.0.0.1:50051`; `port` and
+`openFirewall` adjust that, and a non-loopback `listenAddress` is refused at
+build time without `grpc.tls.enable` and `grpc.tokenFile`, the same rule the
+server enforces on startup.
+
+`bridge.*` describes one Bridge without pairing or discovery: the address and
+id are configuration, and the Application Key comes from the Credentials File
+named by `bridge.credentialsFile`, loaded through systemd `LoadCredential`.
+That path — with `grpc.tls.privateKeyFile` and `grpc.tokenFile` — is the only
+way a secret reaches the service: never an `ExecStart` argument, a
+Nix-rendered environment variable, or anything else that lands in the store.
+It can come from `sops-nix`, `agenix`, or a root-owned file under
+`/run/secrets`. When `bridge.*` is set the Registry file is not read at all;
+leaving it unset falls back to a paired `registry.json` under the state
+directory, written for now by running `hue-grpc-server pair` (see
+[Pairing](#pairing)) against that same directory.
+
+Everything the module does not surface — `--reflection`, `--log-level`, the
+event queue size — is reachable through `extraArgs`.
+
+The aggressive half of the sandbox — a syscall filter, tighter namespace and
+capability limits — is a later pass, tested against a booted VM.
+
 ## State
 
 The Gateway's Registry Entry for its bridge — Bridge ID, address, model,

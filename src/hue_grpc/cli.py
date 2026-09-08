@@ -18,6 +18,12 @@ there for the server to find on its next start.
 Neither takes a path to the Registry: it is `$STATE_DIRECTORY` under systemd
 and `$XDG_STATE_HOME/hue-grpc` outside it, so the two commands cannot be
 pointed at different files by mistake.
+
+A declaratively-installed Gateway does not pair. `--bridge-address`,
+`--bridge-id` and `--credentials-file` describe one Bridge outright — the
+first two are configuration, the third a Credentials File holding the
+Application Key — and when they are set the Registry file is not read at all.
+`hue_grpc.static_registry` is where that path lives.
 """
 
 from __future__ import annotations
@@ -58,6 +64,11 @@ from hue_grpc.serving.config import (
     read_gateway_token,
 )
 from hue_grpc.serving.serve import serve
+from hue_grpc.static_registry import (
+    CredentialsFileError,
+    load_bridge_credentials,
+    static_entry,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -106,6 +117,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="file holding the bearer token clients must present. A file, "
         "never a flag value: ps shows arguments to every user on the host.",
     )
+    static = parser.add_argument_group(
+        "static bridge",
+        "Describe one bridge by configuration instead of pairing. "
+        "--bridge-address turns this on; it then also needs --bridge-id and "
+        "--credentials-file, and the registry file is left untouched.",
+    )
+    static.add_argument(
+        "--bridge-address",
+        metavar="IP",
+        help="the bridge's address on the local network. Setting this selects "
+        "static configuration over the registry.",
+    )
+    static.add_argument(
+        "--bridge-id",
+        metavar="ID",
+        help="the bridge's id, e.g. ECB5FAFFFE334703, asserted against the "
+        "certificate the bridge presents",
+    )
+    static.add_argument(
+        "--credentials-file",
+        type=Path,
+        metavar="PATH",
+        help="a Credentials File: key=value lines holding application-key and, "
+        "optionally, client-key. A file, never a flag value; under systemd a "
+        "LoadCredential path.",
+    )
+
     parser.add_argument(
         "--reflection",
         choices=sorted(_REFLECTION),
@@ -247,6 +285,36 @@ def config_from(args: argparse.Namespace) -> GatewayConfig:
     )
 
 
+def _static_bridge_entry(args: argparse.Namespace) -> RegistryEntry | None:
+    """The bridge `--bridge-address` and friends describe, or `None`.
+
+    `None` means no static bridge was configured, so the Registry file is the
+    source of truth. A `ValueError` or `CredentialsFileError` means one was
+    configured but cannot be used — a half-given set of flags, or an
+    unreadable Credentials File — and the caller turns that into a one-line
+    exit rather than a traceback.
+    """
+    companions = (
+        ("--bridge-id", args.bridge_id),
+        ("--credentials-file", args.credentials_file),
+    )
+    if args.bridge_address is None:
+        stray = [flag for flag, value in companions if value is not None]
+        if stray:
+            raise ValueError(
+                f"{' and '.join(stray)} only applies with --bridge-address"
+            )
+        return None
+    missing = [flag for flag, value in companions if value is None]
+    if missing:
+        raise ValueError(f"--bridge-address also needs {' and '.join(missing)}")
+    return static_entry(
+        bridge_id=args.bridge_id,
+        address=args.bridge_address,
+        credentials=load_bridge_credentials(args.credentials_file),
+    )
+
+
 async def _serve(
     config: GatewayConfig,
     entry: RegistryEntry | None,
@@ -362,17 +430,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         return pair_with_bridge(args)
     try:
         config = config_from(args)
-    except (OSError, ValueError) as unusable:
+        static = _static_bridge_entry(args)
+    except (OSError, ValueError, CredentialsFileError) as unusable:
         # Exit 2 and a one-line message, not a traceback: a unit that will
         # never start should say why in the first line of its journal.
         parser.error(str(unusable))
-    try:
-        entry = Registry(default_registry_path()).load()
-    except RegistryError as unreadable:
-        # Never treated as "nothing is registered": that would send the
-        # gateway off to pair again and strand a working application key.
-        _log.error("gateway could not start: %s", unreadable)
-        return 1
+    if static is not None:
+        _log.info(
+            "serving statically configured bridge %s at %s; registry file "
+            "not consulted",
+            static.bridge_id,
+            static.address,
+        )
+        entry: RegistryEntry | None = static
+    else:
+        try:
+            entry = Registry(default_registry_path()).load()
+        except RegistryError as unreadable:
+            # Never treated as "nothing is registered": that would send the
+            # gateway off to pair again and strand a working application key.
+            _log.error("gateway could not start: %s", unreadable)
+            return 1
     try:
         asyncio.run(_serve(config, entry, event_queue_size=args.event_queue_size))
     except OSError as unavailable:
