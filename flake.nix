@@ -41,6 +41,7 @@
               ps.httpx
               ps.pytest
               ps.mypy
+              ps.pyyaml
             ]))
             pkgs.protobuf
             pkgs.ruff
@@ -49,7 +50,7 @@
           shellHook = ''
             # pyproject deliberately sets no pytest pythonpath, so that the
             # Nix check phase tests the installed package rather than ./src.
-            export PYTHONPATH="$PWD/src''${PYTHONPATH:+:$PYTHONPATH}"
+            export PYTHONPATH="$PWD/src:$PWD/tools''${PYTHONPATH:+:$PYTHONPATH}"
             echo "hue-grpc dev shell - pytest, ruff, mypy, protoc available"
           '';
         };
@@ -73,6 +74,25 @@
           touch $out
         '';
 
+        protogen =
+          pkgs.runCommand "hue-grpc-protogen"
+            {
+              nativeBuildInputs = [
+                (pkgs.python312.withPackages (ps: [
+                  ps.pytest
+                  ps.pyyaml
+                ]))
+                pkgs.protobuf
+              ];
+            }
+            ''
+              cd ${self}
+              export PYTHONPATH="$PWD/tools"
+              export PYTHONDONTWRITEBYTECODE=1
+              pytest tests/protogen -q -p no:cacheprovider
+              touch $out
+            '';
+
         typecheck =
           pkgs.runCommand "hue-grpc-typecheck"
             {
@@ -80,6 +100,7 @@
                 (pkgs.python312.withPackages (ps: [
                   ps.mypy
                   ps.pytest
+                  ps.pyyaml
                   ps.grpcio
                   ps.protobuf
                   ps.httpx
