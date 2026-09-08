@@ -1,0 +1,33 @@
+// Generated from the Hue OpenAPI document. Do not edit.
+// 
+// Regenerate with `python -m protogen`. See
+// docs/adr/0001-custom-openapi-to-proto-generator.md.
+
+syntax = "proto3";
+
+package hue.v1;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+message Event {
+  enum Type {
+    TYPE_UNSPECIFIED = 0;
+    TYPE_ADD = 1;
+    TYPE_DELETE = 2;
+    TYPE_ERROR = 3;
+    TYPE_UPDATE = 4;
+  }
+  // Individual resource data
+  message Data {
+    string type = 1;
+    string id = 2;
+    optional string id_v1 = 3;
+    // Keys the schema does not name individually.
+    optional .google.protobuf.Struct additional_properties = 4;
+  }
+  string id = 1;
+  Type type = 2;
+  .google.protobuf.Timestamp creationtime = 3;
+  repeated Data data = 4;
+}

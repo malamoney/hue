@@ -68,6 +68,9 @@ def test_protoc_accepts_the_generated_file(tmp_path: Path) -> None:
             "LightPut",
             "--root",
             "ResourceIdentifier",
+            # `identify` is a genuine trigger object with no fields.
+            "--allow-empty",
+            "LightGet.Identify",
         ]
     )
 

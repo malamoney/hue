@@ -93,6 +93,39 @@
               touch $out
             '';
 
+        # The committed .proto files must match what the generator produces,
+        # and protoc must accept them. A stale checked-in proto would
+        # otherwise diverge silently from the spec it claims to come from.
+        protos-current =
+          pkgs.runCommand "hue-grpc-protos-current"
+            {
+              nativeBuildInputs = [
+                (pkgs.python312.withPackages (ps: [ ps.pyyaml ]))
+                pkgs.protobuf
+                pkgs.diffutils
+              ];
+            }
+            ''
+              cp -r ${self} source
+              chmod -R +w source
+              cd source
+
+              export PYTHONPATH="$PWD/tools"
+              export PYTHONDONTWRITEBYTECODE=1
+
+              # Regenerate into an emptied tree, so a file the manifest no
+              # longer produces shows up as a difference rather than
+              # surviving untouched.
+              rm -rf proto/hue
+              python -m protogen --manifest proto/manifest.toml
+
+              diff -ru ${self}/proto ./proto
+              protoc --proto_path=proto --descriptor_set_out=/dev/null \
+                proto/hue/v1/*.proto
+
+              touch $out
+            '';
+
         typecheck =
           pkgs.runCommand "hue-grpc-typecheck"
             {

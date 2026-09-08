@@ -42,6 +42,19 @@ _SCALARS: dict[tuple[str, str | None], str] = {
     ("number", "float"): "float",
 }
 
+# Well-known types, and the import each one needs.
+TIMESTAMP = ".google.protobuf.Timestamp"
+STRUCT = ".google.protobuf.Struct"
+STRUCT_IMPORT = "google/protobuf/struct.proto"
+_WELL_KNOWN: dict[tuple[str, str | None], tuple[str, str]] = {
+    ("string", "date-time"): (TIMESTAMP, "google/protobuf/timestamp.proto"),
+}
+
+# Where a schema says it carries arbitrary extra keys, they are kept in one
+# Struct field. The event stream's payload lives there: without it the
+# generated message can say which resource changed but not what changed.
+ADDITIONAL_PROPERTIES_FIELD = "additional_properties"
+
 Kind = Literal["enum", "message", "scalar"]
 
 
@@ -108,11 +121,26 @@ def _build_enum(name: str, values: list[Any]) -> Enum:
 
 class _Converter:
     def __init__(
-        self, spec: dict[str, Any], package: str, numbers: FieldNumbers
+        self,
+        spec: dict[str, Any],
+        package: str,
+        numbers: FieldNumbers,
+        owner_of: dict[str, str] | None = None,
+        current_file: str | None = None,
+        allow_empty: set[str] | None = None,
     ) -> None:
         self._spec = spec
         self._package = package
         self._numbers = numbers
+        # Which file owns each component schema, so a reference to one owned
+        # elsewhere becomes an import rather than a duplicate definition.
+        self._owner_of = owner_of or {}
+        self._current_file = current_file
+        # Scopes permitted to produce a message with no fields. Some Hue
+        # objects genuinely are empty triggers; most are a modelling mistake.
+        self._allow_empty = allow_empty or set()
+        self.imports: set[str] = set()
+        self.emitted_components: set[str] = set()
         self._messages: dict[str, Message] = {}
         self._enums: dict[str, Enum] = {}
         self._pending: list[str] = []
@@ -131,8 +159,10 @@ class _Converter:
         schema = flatten_schema(self._spec, {REF: f"{SCHEMA_REF_PREFIX}{schema_name}"})
         kind = _classify(schema)
         if kind == "enum":
+            self.emitted_components.add(schema_name)
             self._enums[proto_name] = _build_enum(proto_name, schema["enum"])
         elif kind == "message":
+            self.emitted_components.add(schema_name)
             self._messages[proto_name] = self._message(
                 proto_name, schema, scope=proto_name
             )
@@ -157,6 +187,25 @@ class _Converter:
                     nested=nested,
                     scope=scope,
                 )
+            )
+
+        if schema.get("additionalProperties") is True:
+            self.imports.add(STRUCT_IMPORT)
+            fields.append(
+                Field(
+                    ADDITIONAL_PROPERTIES_FIELD,
+                    STRUCT,
+                    self._numbers.assign(scope, ADDITIONAL_PROPERTIES_FIELD),
+                    optional=True,
+                    comment="Keys the schema does not name individually.",
+                )
+            )
+
+        if not fields and not enums and not nested and scope not in self._allow_empty:
+            raise ValueError(
+                f"{scope}: object has no properties, so the message could never "
+                "carry a value. Add it to allow_empty in the manifest if this "
+                "is genuinely an empty trigger object."
             )
 
         return Message(
@@ -221,6 +270,14 @@ class _Converter:
             message = self._message(nested_name, schema, scope=f"{scope}.{nested_name}")
             nested.append(message)
             return message.name
+        return self._scalar(name, schema)
+
+    def _scalar(self, name: str, schema: dict[str, Any]) -> str:
+        well_known = _WELL_KNOWN.get((str(schema.get("type")), schema.get("format")))
+        if well_known is not None:
+            type_name, import_path = well_known
+            self.imports.add(import_path)
+            return type_name
         return _scalar_type(name, schema)
 
     def _reference_type(self, name: str, ref: str) -> str:
@@ -234,12 +291,17 @@ class _Converter:
         if kind == "scalar":
             # e.g. Brightness is a bare number; a fieldless message would
             # silently drop the value.
-            return _scalar_type(name, schema)
+            return self._scalar(name, schema)
 
-        self._pending.append(target)
+        proto_name = pascal_case(target)
+        owner = self._owner_of.get(proto_name)
+        if owner is not None and owner != self._current_file:
+            self.imports.add(owner)
+        else:
+            self._pending.append(target)
         # Fully qualified: a nested message of the same name would otherwise
         # capture this reference.
-        return f".{self._package}.{pascal_case(target)}"
+        return f".{self._package}.{proto_name}"
 
 
 def convert_document(
@@ -249,14 +311,17 @@ def convert_document(
     package: str,
     header: str | None = None,
     numbers: FieldNumbers | None = None,
+    allow_empty: list[str] | None = None,
 ) -> ProtoFile:
     """Convert `roots` and everything they reference into one proto file."""
-    messages, enums = _Converter(spec, package, numbers or FieldNumbers()).convert(
-        roots
+    converter = _Converter(
+        spec, package, numbers or FieldNumbers(), allow_empty=set(allow_empty or [])
     )
+    messages, enums = converter.convert(roots)
     return ProtoFile(
         package=package,
         messages=tuple(messages),
         enums=tuple(enums),
+        imports=tuple(sorted(converter.imports)),
         header=header,
     )

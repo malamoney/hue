@@ -1,0 +1,310 @@
+// Generated from the Hue OpenAPI document. Do not edit.
+// 
+// Regenerate with `python -m protogen`. See
+// docs/adr/0001-custom-openapi-to-proto-generator.md.
+
+syntax = "proto3";
+
+package hue.v1;
+
+enum LightArchetype {
+  LIGHT_ARCHETYPE_UNSPECIFIED = 0;
+  LIGHT_ARCHETYPE_UNKNOWN_ARCHETYPE = 1;
+  LIGHT_ARCHETYPE_CLASSIC_BULB = 2;
+  LIGHT_ARCHETYPE_SULTAN_BULB = 3;
+  LIGHT_ARCHETYPE_FLOOD_BULB = 4;
+  LIGHT_ARCHETYPE_SPOT_BULB = 5;
+  LIGHT_ARCHETYPE_CANDLE_BULB = 6;
+  LIGHT_ARCHETYPE_LUSTER_BULB = 7;
+  LIGHT_ARCHETYPE_PENDANT_ROUND = 8;
+  LIGHT_ARCHETYPE_PENDANT_LONG = 9;
+  LIGHT_ARCHETYPE_CEILING_ROUND = 10;
+  LIGHT_ARCHETYPE_CEILING_SQUARE = 11;
+  LIGHT_ARCHETYPE_FLOOR_SHADE = 12;
+  LIGHT_ARCHETYPE_FLOOR_LANTERN = 13;
+  LIGHT_ARCHETYPE_TABLE_SHADE = 14;
+  LIGHT_ARCHETYPE_RECESSED_CEILING = 15;
+  LIGHT_ARCHETYPE_RECESSED_FLOOR = 16;
+  LIGHT_ARCHETYPE_SINGLE_SPOT = 17;
+  LIGHT_ARCHETYPE_DOUBLE_SPOT = 18;
+  LIGHT_ARCHETYPE_TABLE_WASH = 19;
+  LIGHT_ARCHETYPE_WALL_LANTERN = 20;
+  LIGHT_ARCHETYPE_WALL_SHADE = 21;
+  LIGHT_ARCHETYPE_FLEXIBLE_LAMP = 22;
+  LIGHT_ARCHETYPE_GROUND_SPOT = 23;
+  LIGHT_ARCHETYPE_WALL_SPOT = 24;
+  LIGHT_ARCHETYPE_PLUG = 25;
+  LIGHT_ARCHETYPE_HUE_GO = 26;
+  LIGHT_ARCHETYPE_HUE_LIGHTSTRIP = 27;
+  LIGHT_ARCHETYPE_HUE_IRIS = 28;
+  LIGHT_ARCHETYPE_HUE_BLOOM = 29;
+  LIGHT_ARCHETYPE_BOLLARD = 30;
+  LIGHT_ARCHETYPE_WALL_WASHER = 31;
+  LIGHT_ARCHETYPE_HUE_PLAY = 32;
+  LIGHT_ARCHETYPE_VINTAGE_BULB = 33;
+  LIGHT_ARCHETYPE_VINTAGE_CANDLE_BULB = 34;
+  LIGHT_ARCHETYPE_ELLIPSE_BULB = 35;
+  LIGHT_ARCHETYPE_TRIANGLE_BULB = 36;
+  LIGHT_ARCHETYPE_SMALL_GLOBE_BULB = 37;
+  LIGHT_ARCHETYPE_LARGE_GLOBE_BULB = 38;
+  LIGHT_ARCHETYPE_EDISON_BULB = 39;
+  LIGHT_ARCHETYPE_CHRISTMAS_TREE = 40;
+  LIGHT_ARCHETYPE_STRING_LIGHT = 41;
+  LIGHT_ARCHETYPE_HUE_CENTRIS = 42;
+  LIGHT_ARCHETYPE_HUE_LIGHTSTRIP_TV = 43;
+  LIGHT_ARCHETYPE_HUE_LIGHTSTRIP_PC = 44;
+  LIGHT_ARCHETYPE_HUE_TUBE = 45;
+  LIGHT_ARCHETYPE_HUE_SIGNE = 46;
+  LIGHT_ARCHETYPE_PENDANT_SPOT = 47;
+  LIGHT_ARCHETYPE_CEILING_HORIZONTAL = 48;
+  LIGHT_ARCHETYPE_CEILING_TUBE = 49;
+}
+
+enum SupportedDynamicStatus {
+  SUPPORTED_DYNAMIC_STATUS_UNSPECIFIED = 0;
+  SUPPORTED_DYNAMIC_STATUS_DYNAMIC_PALETTE = 1;
+  SUPPORTED_DYNAMIC_STATUS_NONE = 2;
+}
+
+enum SupportedEffects {
+  SUPPORTED_EFFECTS_UNSPECIFIED = 0;
+  SUPPORTED_EFFECTS_PRISM = 1;
+  SUPPORTED_EFFECTS_OPAL = 2;
+  SUPPORTED_EFFECTS_GLISTEN = 3;
+  SUPPORTED_EFFECTS_SPARKLE = 4;
+  SUPPORTED_EFFECTS_FIRE = 5;
+  SUPPORTED_EFFECTS_CANDLE = 6;
+  SUPPORTED_EFFECTS_NO_EFFECT = 7;
+  SUPPORTED_EFFECTS_UNDERWATER = 8;
+  SUPPORTED_EFFECTS_COSMOS = 9;
+  SUPPORTED_EFFECTS_SUNBEAM = 10;
+  SUPPORTED_EFFECTS_ENCHANT = 11;
+}
+
+enum SupportedGradientMode {
+  SUPPORTED_GRADIENT_MODE_UNSPECIFIED = 0;
+  SUPPORTED_GRADIENT_MODE_INTERPOLATED_PALETTE = 1;
+  SUPPORTED_GRADIENT_MODE_INTERPOLATED_PALETTE_MIRRORED = 2;
+  SUPPORTED_GRADIENT_MODE_RANDOM_PIXELATED = 3;
+}
+
+enum SupportedSignals {
+  SUPPORTED_SIGNALS_UNSPECIFIED = 0;
+  SUPPORTED_SIGNALS_NO_SIGNAL = 1;
+  SUPPORTED_SIGNALS_ON_OFF = 2;
+  SUPPORTED_SIGNALS_ON_OFF_COLOR = 3;
+  SUPPORTED_SIGNALS_ALTERNATING = 4;
+}
+
+enum SupportedTimedEffects {
+  SUPPORTED_TIMED_EFFECTS_UNSPECIFIED = 0;
+  SUPPORTED_TIMED_EFFECTS_SUNRISE = 1;
+  SUPPORTED_TIMED_EFFECTS_SUNSET = 2;
+  SUPPORTED_TIMED_EFFECTS_NO_EFFECT = 3;
+}
+
+// Joined alert control
+message Alert {
+  optional string action = 1;
+}
+
+message Color {
+  .hue.v1.GamutPosition xy = 1;
+}
+
+message ColorTemperature {
+  optional int32 mirek = 1;
+}
+
+message ColorTemperatureDelta {
+  enum Action {
+    ACTION_UNSPECIFIED = 0;
+    ACTION_UP = 1;
+    ACTION_DOWN = 2;
+    ACTION_STOP = 3;
+  }
+  optional Action action = 1;
+  optional int32 mirek_delta = 2;
+}
+
+message Dimming {
+  double brightness = 1;
+}
+
+message DimmingDelta {
+  enum Action {
+    ACTION_UNSPECIFIED = 0;
+    ACTION_UP = 1;
+    ACTION_DOWN = 2;
+    ACTION_STOP = 3;
+  }
+  optional Action action = 1;
+  optional double brightness_delta = 2;
+}
+
+// Basic feature containing effect properties.
+message Effects {
+  optional .hue.v1.SupportedEffects effect = 1;
+}
+
+// Extended effect control with support for custom color, color temperature, and speed parameters.
+// This property is present on lights that support the newer effects engine and allows fine-grained
+// control over effect appearance beyond what the basic `effects` property provides.
+message EffectsV2 {
+  // Set effect with optional parameters.
+  message Action {
+    optional .hue.v1.SupportedEffects effect = 1;
+    optional .hue.v1.EffectsV2Parameters parameters = 2;
+  }
+  // Current effect status and active parameters.
+  message Status {
+    optional .hue.v1.SupportedEffects effect = 1;
+    repeated .hue.v1.SupportedEffects effect_values = 2;
+    optional .hue.v1.EffectsV2Parameters parameters = 3;
+  }
+  optional Action action = 1;
+  optional Status status = 2;
+}
+
+// Parameters for controlling the appearance of an active effect.
+message EffectsV2Parameters {
+  message ColorTemperature {
+    optional int32 mirek = 1;
+    optional bool mirek_valid = 2;
+  }
+  optional .hue.v1.Color color = 1;
+  optional ColorTemperature color_temperature = 2;
+  optional double speed = 3;
+}
+
+message Error {
+  string description = 1;
+}
+
+// CIE XY gamut position
+message GamutPosition {
+  double x = 1;
+  double y = 2;
+}
+
+// Basic feature containing gradient properties.
+message Gradient {
+  repeated .hue.v1.Color points = 1;
+  optional .hue.v1.SupportedGradientMode mode = 2;
+}
+
+message LightDynamics {
+  optional int32 duration = 1;
+  optional double speed = 2;
+}
+
+message On {
+  bool on = 1;
+}
+
+// Feature containing properties to configure powerup behaviour of a lightsource.
+message Powerup {
+  enum Preset {
+    PRESET_UNSPECIFIED = 0;
+    PRESET_SAFETY = 1;
+    PRESET_POWERFAIL = 2;
+    PRESET_LAST_ON_STATE = 3;
+    PRESET_CUSTOM = 4;
+  }
+  message On {
+    enum Mode {
+      MODE_UNSPECIFIED = 0;
+      MODE_ON = 1;
+      MODE_TOGGLE = 2;
+      MODE_PREVIOUS = 3;
+    }
+    optional Mode mode = 1;
+    optional .hue.v1.On on = 2;
+  }
+  message Dimming {
+    enum Mode {
+      MODE_UNSPECIFIED = 0;
+      MODE_DIMMING = 1;
+      MODE_PREVIOUS = 2;
+    }
+    message Color {
+      enum Mode {
+        MODE_UNSPECIFIED = 0;
+        MODE_COLOR_TEMPERATURE = 1;
+        MODE_COLOR = 2;
+        MODE_PREVIOUS = 3;
+      }
+      message ColorTemperature {
+        optional int32 mirek = 1;
+        optional .hue.v1.Color color = 2;
+      }
+      optional Mode mode = 1;
+      optional ColorTemperature color_temperature = 2;
+    }
+    optional Mode mode = 1;
+    optional double dimming = 2;
+    optional Color color = 3;
+  }
+  optional Preset preset = 1;
+  optional bool configured = 2;
+  optional On on = 3;
+  optional Dimming dimming = 4;
+}
+
+message ResourceIdentifier {
+  enum Rtype {
+    RTYPE_UNSPECIFIED = 0;
+    RTYPE_DEVICE = 1;
+    RTYPE_BRIDGE_HOME = 2;
+    RTYPE_ROOM = 3;
+    RTYPE_ZONE = 4;
+    RTYPE_LIGHT = 5;
+    RTYPE_BUTTON = 6;
+    RTYPE_RELATIVE_ROTARY = 7;
+    RTYPE_TEMPERATURE = 8;
+    RTYPE_LIGHT_LEVEL = 9;
+    RTYPE_MOTION = 10;
+    RTYPE_CAMERA_MOTION = 11;
+    RTYPE_ENTERTAINMENT = 12;
+    RTYPE_CONTACT = 13;
+    RTYPE_TAMPER = 14;
+    RTYPE_GROUPED_LIGHT = 15;
+    RTYPE_DEVICE_POWER = 16;
+    RTYPE_ZIGBEE_BRIDGE_CONNECTIVITY = 17;
+    RTYPE_ZIGBEE_CONNECTIVITY = 18;
+    RTYPE_ZGP_CONNECTIVITY = 19;
+    RTYPE_BRIDGE = 20;
+    RTYPE_ZIGBEE_DEVICE_DISCOVERY = 21;
+    RTYPE_HOMEKIT = 22;
+    RTYPE_MATTER = 23;
+    RTYPE_MATTER_FABRIC = 24;
+    RTYPE_SCENE = 25;
+    RTYPE_ENTERTAINMENT_CONFIGURATION = 26;
+    RTYPE_PUBLIC_IMAGE = 27;
+    RTYPE_AUTH_V1 = 28;
+    RTYPE_BEHAVIOR_SCRIPT = 29;
+    RTYPE_BEHAVIOR_INSTANCE = 30;
+    RTYPE_GEOFENCE = 31;
+    RTYPE_GEOFENCE_CLIENT = 32;
+    RTYPE_GEOLOCATION = 33;
+    RTYPE_SMART_SCENE = 34;
+    RTYPE_GROUPED_MOTION = 35;
+    RTYPE_GROUPED_LIGHT_LEVEL = 36;
+  }
+  string rid = 1;
+  Rtype rtype = 2;
+}
+
+// Feature containing basic signaling properties.
+message Signaling {
+  enum Signal {
+    SIGNAL_UNSPECIFIED = 0;
+    SIGNAL_NO_SIGNAL = 1;
+    SIGNAL_ON_OFF = 2;
+    SIGNAL_ON_OFF_COLOR = 3;
+    SIGNAL_ALTERNATING = 4;
+  }
+  optional Signal signal = 1;
+  optional int32 duration = 2;
+  repeated .hue.v1.Color color = 3;
+}
