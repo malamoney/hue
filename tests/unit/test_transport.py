@@ -24,6 +24,7 @@ from hue_grpc.hue.transport import (
     MalformedResponseError,
     Timeouts,
 )
+from hue_grpc.logs import tracking_call
 
 
 def test_applies_the_application_key_to_clip_v2_requests(
@@ -300,5 +301,27 @@ def test_accepts_a_successful_response_with_no_body(
                 )
 
             assert payload is None
+
+    run(scenario())
+
+
+def test_reports_the_bridges_status_to_whatever_rpc_is_being_served(
+    bridge_certs: BridgeCerts,
+) -> None:
+    """The Bridge's HTTP status belongs on the RPC's log line, and this is the
+    only layer that ever sees it. Outside an RPC there is nothing to tell."""
+
+    async def scenario() -> None:
+        async with FakeBridge(bridge_certs, status="207 Multi-Status") as bridge:
+            transport = HueTransport(
+                bridge_id=BRIDGE_ID,
+                address=bridge.address,
+                ca_pem=bridge_certs.ca_pem,
+            )
+            async with transport:
+                with tracking_call("a-correlation-id") as call:
+                    await transport.request("GET", "/clip/v2/resource/light")
+
+                assert call.upstream_status == 207
 
     run(scenario())

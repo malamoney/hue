@@ -36,6 +36,8 @@
           packages = [
             (pkgs.python312.withPackages (ps: [
               ps.grpcio
+              ps.grpcio-health-checking
+              ps.grpcio-reflection
               ps.grpcio-tools
               ps.protobuf
               ps.httpx
@@ -46,6 +48,8 @@
             ]))
             pkgs.protobuf
             pkgs.ruff
+            # For checking reflection by hand: grpcurl -plaintext 127.0.0.1:50051 list
+            pkgs.grpcurl
           ];
 
           shellHook = ''
@@ -127,6 +131,47 @@
               touch $out
             '';
 
+        # Issue #9's acceptance, run against the real binary rather than a
+        # test harness: the server starts, health answers, and a client that
+        # knows nothing about this project can list its services through
+        # reflection.
+        acceptance =
+          pkgs.runCommand "hue-grpc-acceptance"
+            {
+              nativeBuildInputs = [
+                self.packages.${pkgs.system}.hue-grpc
+                pkgs.grpcurl
+              ];
+            }
+            ''
+              port=50251
+              hue-grpc-server --port "$port" --log-format json >server.log 2>&1 &
+              gateway=$!
+              trap 'kill $gateway 2>/dev/null || true' EXIT
+
+              # The listener is up within milliseconds; twenty seconds is for
+              # a loaded builder, not for a server that is going to fail.
+              for _ in $(seq 1 100); do
+                if grpcurl -plaintext "127.0.0.1:$port" list >services.txt 2>/dev/null; then
+                  break
+                fi
+                sleep 0.2
+              done
+              cat server.log
+
+              grep -q 'grpc.health.v1.Health' services.txt
+              grep -q 'grpc.reflection.v1alpha.ServerReflection' services.txt
+              grpcurl -plaintext -d '{}' "127.0.0.1:$port" \
+                grpc.health.v1.Health/Check | grep -q SERVING
+
+              # systemd stops the unit this way, and expects exit 0.
+              kill -TERM $gateway
+              wait $gateway
+              grep -q 'gateway stopped' server.log
+
+              touch $out
+            '';
+
         typecheck =
           pkgs.runCommand "hue-grpc-typecheck"
             {
@@ -136,6 +181,8 @@
                   ps.pytest
                   ps.pyyaml
                   ps.grpcio
+                  ps.grpcio-health-checking
+                  ps.grpcio-reflection
                   ps.protobuf
                   ps.httpx
                   ps.cryptography
