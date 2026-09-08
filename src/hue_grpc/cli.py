@@ -8,18 +8,40 @@ which combinations are allowed live.
 The Gateway Token is the one thing that is never a flag *value*: `ps` shows
 every argument a process was started with to every user on the host, so it is
 read from a file, which under systemd is a credential.
+
+Two things can be asked of the binary. With no subcommand it serves, which is
+what the unit does. `pair` mints an Application Key from a Bridge whose link
+button has just been pressed and writes it into the Registry — a thing done
+once, by a person standing next to the Bridge, and the only way an entry gets
+there for the server to find on its next start.
+
+Neither takes a path to the Registry: it is `$STATE_DIRECTORY` under systemd
+and `$XDG_STATE_HOME/hue-grpc` outside it, so the two commands cannot be
+pointed at different files by mistake.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import datetime as dt
 import logging
+import socket
 from collections.abc import Sequence
 from pathlib import Path
 
 from hue_grpc import __version__
+from hue_grpc.hue import pairing
+from hue_grpc.hue.lights import Lights
+from hue_grpc.hue.transport import HueTransport, HueTransportError
+from hue_grpc.lighting.service import hosted_lighting_service
 from hue_grpc.logs import configure_logging
+from hue_grpc.registry import (
+    Registry,
+    RegistryEntry,
+    RegistryError,
+    default_registry_path,
+)
 from hue_grpc.serving.config import (
     DEFAULT_ADDRESS,
     DEFAULT_DEADLINE_SECONDS,
@@ -139,7 +161,47 @@ def build_parser() -> argparse.ArgumentParser:
         default="json",
         help="json for the journal, text for a terminal (default: %(default)s)",
     )
+
+    commands = parser.add_subparsers(dest="command", metavar="{pair}")
+    pair_command = commands.add_parser(
+        "pair",
+        help="mint an application key from a bridge and register it",
+        description="Pair with a bridge and write the result into the "
+        "registry. Press the bridge's link button first: it has about thirty "
+        "seconds of memory for it.",
+    )
+    pair_command.add_argument(
+        "--bridge-address",
+        required=True,
+        metavar="IP",
+        help="the bridge's address on the local network",
+    )
+    pair_command.add_argument(
+        "--bridge-id",
+        required=True,
+        metavar="ID",
+        help="the bridge's id, e.g. ECB5FAFFFE334703. Asserted against the "
+        "certificate the bridge presents, so a wrong one is refused rather "
+        "than paired with whatever answered.",
+    )
+    pair_command.add_argument(
+        "--instance",
+        default=default_instance(),
+        help="which gateway this is, as it appears in the bridge's app list "
+        "(default: %(default)s)",
+    )
     return parser
+
+
+def default_instance() -> str:
+    """This host's short name, which is what the Bridge's app list will show.
+
+    Truncated rather than refused: the limit is the Bridge's, and a name too
+    long for it is not a reason to make somebody pass a flag. `--instance`
+    is there for anyone who wants to choose, and is checked in full.
+    """
+    name = socket.gethostname().split(".")[0] or "gateway"
+    return name[: pairing.INSTANCE_NAME_LIMIT]
 
 
 def config_from(args: argparse.Namespace) -> GatewayConfig:
@@ -174,10 +236,98 @@ def config_from(args: argparse.Namespace) -> GatewayConfig:
     )
 
 
+async def _serve(config: GatewayConfig, entry: RegistryEntry | None) -> None:
+    """Listen, serving lights from `entry`'s Bridge if there is one.
+
+    An unpaired Gateway still listens and still hosts the lighting service:
+    health, reflection and a clear FAILED_PRECONDITION are more use than a
+    unit that refuses to start, and the fix — walking to the Bridge — is not
+    one anybody can perform from a failed boot.
+    """
+    if entry is None:
+        _log.warning(
+            "no bridge is registered; lighting calls will be refused until "
+            "`hue-grpc-server pair` has run"
+        )
+        await serve(config, [hosted_lighting_service(None)])
+        return
+    transport = HueTransport(
+        bridge_id=entry.bridge_id,
+        address=entry.address,
+        application_key=entry.application_key,
+    )
+    async with transport:
+        await serve(config, [hosted_lighting_service(Lights(transport))])
+
+
+async def _mint(
+    *, address: str, bridge_id: str, instance: str
+) -> pairing.PairedSecrets:
+    """One Pairing exchange, over a connection verified as `bridge_id`."""
+    async with HueTransport(bridge_id=bridge_id, address=address) as transport:
+        return await pairing.pair(transport, instance=instance)
+
+
+def pair_with_bridge(args: argparse.Namespace) -> int:
+    """The `pair` subcommand: mint an Application Key and write it down."""
+    registry = Registry(default_registry_path())
+    try:
+        registered = registry.load()
+    except RegistryError as unreadable:
+        _log.error("%s", unreadable)
+        return 1
+    if registered is not None:
+        # Pairing again would mint a second key and abandon the first in the
+        # bridge's app list, where only a person with the Hue app can remove
+        # it. Following a bridge to a new address needs no new key at all.
+        _log.error(
+            "bridge %s is already registered in %s; remove that file to pair "
+            "from scratch",
+            registered.bridge_id,
+            registry.path,
+        )
+        return 1
+    try:
+        secrets = asyncio.run(
+            _mint(
+                address=args.bridge_address,
+                bridge_id=args.bridge_id,
+                instance=args.instance,
+            )
+        )
+    except pairing.LinkButtonNotPressedError:
+        _log.error(
+            "the bridge's link button has not been pressed; press it and run "
+            "this again within thirty seconds"
+        )
+        return 1
+    except (pairing.PairingError, HueTransportError, ValueError) as failed:
+        _log.error("pairing failed: %s", failed)
+        return 1
+    registry.save(
+        RegistryEntry(
+            bridge_id=args.bridge_id,
+            address=args.bridge_address,
+            model=None,
+            firmware=None,
+            last_contact=dt.datetime.now(tz=dt.UTC),
+            application_key=secrets.application_key,
+            client_key=secrets.client_key,
+        )
+    )
+    _log.info(
+        "bridge %s registered; start the gateway to serve its lights",
+        args.bridge_id,
+    )
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     configure_logging(level=args.log_level, style=args.log_format)
+    if args.command == "pair":
+        return pair_with_bridge(args)
     try:
         config = config_from(args)
     except (OSError, ValueError) as unusable:
@@ -185,7 +335,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         # never start should say why in the first line of its journal.
         parser.error(str(unusable))
     try:
-        asyncio.run(serve(config))
+        entry = Registry(default_registry_path()).load()
+    except RegistryError as unreadable:
+        # Never treated as "nothing is registered": that would send the
+        # gateway off to pair again and strand a working application key.
+        _log.error("gateway could not start: %s", unreadable)
+        return 1
+    try:
+        asyncio.run(_serve(config, entry))
     except OSError as unavailable:
         _log.error("gateway could not start: %s", unavailable)
         return 1

@@ -3,9 +3,10 @@ result
 result-*
 .direnv/
 
-# Generated protobuf code. Produced by the generator during the Nix build and
-# on dev shell entry, never committed. See docs/adr/0001.
-/src/hue_grpc/proto/
+# Generated protobuf code. Produced by protoc during the Nix build and on dev
+# shell entry, never committed. The path is protoc's to choose, not ours; see
+# tools/generate-python-protos.sh and docs/adr/0001.
+/src/hue/
 
 # Python
 /build/
