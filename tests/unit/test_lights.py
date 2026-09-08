@@ -8,6 +8,7 @@ a Bridge would actually receive.
 from __future__ import annotations
 
 import json
+import logging
 
 import pytest
 from conftest import BRIDGE_ID, BridgeCerts, FakeBridge, run
@@ -177,3 +178,28 @@ def test_an_id_that_could_change_the_path_never_reaches_the_bridge(
         assert bridge.requests == []
 
     run(scenario())
+
+
+def test_an_error_the_bridge_attached_to_a_read_is_not_swallowed(
+    bridge_certs: BridgeCerts, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A read has nowhere on the wire to put one, which is not a reason to
+    behave as though the bridge never said it."""
+    body = json.dumps(
+        {
+            "errors": [{"description": "device (light) has communication issues"}],
+            "data": [{"type": "light", "id": LIGHT_ID, "on": {"on": True}}],
+        }
+    )
+
+    async def scenario() -> None:
+        async with FakeBridge(bridge_certs, body=body) as bridge:
+            lights = lights_on(bridge, bridge_certs)
+            async with lights.transport:
+                assert [light["id"] for light in await lights.all()] == [LIGHT_ID]
+
+    with caplog.at_level(logging.WARNING):
+        run(scenario())
+
+    assert "device (light) has communication issues" in caplog.text
+    assert LIGHT_COLLECTION in caplog.text

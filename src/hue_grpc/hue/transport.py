@@ -3,10 +3,21 @@
 This is the only layer that knows the Application Key exists: it applies the
 `hue-application-key` header and keeps the header out of logs. It speaks both
 CLIP v2 and the v1 `POST /api` endpoint, because Pairing lives on the old API.
+
+It is also where a lost connection is asked again, because it is the only
+layer that still holds the request. Which requests may be asked again is
+`hue_grpc.hue.retry`'s rule; which failures are worth asking again for is
+decided here, and it is a short list: a connection that could not be made or
+was lost carried no answer, so there is nothing to lose by trying it once
+more. Everything else — a timeout, a 429, a 503 — is the Bridge having
+already spent the caller's deadline once, or the Bridge asking to be left
+alone. Both go back to the client, who can see the whole round trip and
+decide.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator, Mapping
@@ -16,11 +27,13 @@ from typing import Any
 
 import httpx
 
+from hue_grpc.hue.retry import Retry
 from hue_grpc.hue.tls import bridge_ssl_context
 from hue_grpc.logs import record_upstream_status
 
 __all__ = [
     "APPLICATION_KEY_HEADER",
+    "DEFAULT_RETRY",
     "DEFAULT_TIMEOUTS",
     "BridgeResponseError",
     "BridgeTimeoutError",
@@ -100,6 +113,8 @@ class Timeouts:
 
 DEFAULT_TIMEOUTS = Timeouts()
 
+DEFAULT_RETRY = Retry()
+
 
 class HueTransport:
     """An HTTPS connection pool for one Bridge, verified as that Bridge."""
@@ -111,11 +126,13 @@ class HueTransport:
         address: str,
         application_key: str | None = None,
         timeouts: Timeouts = DEFAULT_TIMEOUTS,
+        retry: Retry = DEFAULT_RETRY,
         ca_pem: str | None = None,
     ) -> None:
         #: Set once Pairing mints one; until then requests go out unauthenticated.
         self.application_key = application_key
         self._timeouts = timeouts
+        self._retry = retry
         self._client = httpx.AsyncClient(
             base_url=f"https://{address}",
             verify=bridge_ssl_context(bridge_id, ca_pem=ca_pem),
@@ -132,14 +149,36 @@ class HueTransport:
         await self._client.aclose()
 
     async def request(self, method: str, path: str, *, json: Any = None) -> Any:
-        """Make one request to the Bridge and return its decoded JSON body."""
-        request = self._client.build_request(
-            method, path, json=json, headers=self._headers()
-        )
-        response = await self._send(request)
-        if not response.is_success:
-            raise BridgeResponseError(response.status_code, _failure_payload(response))
-        return _decode(response)
+        """Make one request to the Bridge and return its decoded JSON body.
+
+        A safe read that loses its connection is asked again on `retry`'s
+        schedule. A mutation is not, ever: see `hue_grpc.hue.retry`.
+        """
+        pauses = self._retry.pauses(method)
+        while True:
+            request = self._client.build_request(
+                method, path, json=json, headers=self._headers()
+            )
+            try:
+                response = await self._send(request)
+            except BridgeUnreachableError as lost:
+                pause = next(pauses, None)
+                if pause is None:
+                    raise
+                _log.warning(
+                    "bridge unreachable on %s %s, retrying in %.3fs: %s",
+                    method,
+                    path,
+                    pause,
+                    lost,
+                )
+                await asyncio.sleep(pause)
+                continue
+            if not response.is_success:
+                raise BridgeResponseError(
+                    response.status_code, _failure_payload(response)
+                )
+            return _decode(response)
 
     @asynccontextmanager
     async def stream(
@@ -150,6 +189,10 @@ class HueTransport:
         The body is left unread: the caller consumes it as it arrives. Only
         `stream_read` bounds the wait between chunks, so a quiet Bridge is not
         mistaken for a wedged one.
+
+        Never retried, whatever `retry` says. Reconnecting an event stream
+        opens a Gap, and a reconnection that happened underneath its reader
+        would hide the one thing the reader has to know about.
         """
         request = self._client.build_request(
             method,

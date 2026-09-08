@@ -19,6 +19,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from hue_grpc.hue import errors
 from hue_grpc.hue.transport import (
     BridgeResponseError,
     HueTransport,
@@ -82,6 +83,7 @@ class Lights:
     async def all(self) -> list[Mapping[str, Any]]:
         """Every light the Bridge knows about."""
         payload = await self._transport.request("GET", LIGHT_COLLECTION)
+        _report(payload, LIGHT_COLLECTION)
         return _data(payload, LIGHT_COLLECTION)
 
     async def one(self, light_id: str) -> Mapping[str, Any]:
@@ -95,6 +97,7 @@ class Lights:
                     refused
                 )
             raise
+        _report(payload, path)
         data = _data(payload, path)
         if not data:
             # A 200 with an empty collection. Hue answers 404 for an id it
@@ -108,7 +111,8 @@ class Lights:
 
         Never retried. A `PUT` that failed after the Bridge acted on it cannot
         be told apart from one that failed before, and repeating it would be
-        the Gateway deciding to change the lights twice.
+        the Gateway deciding to change the lights twice. `hue_grpc.hue.retry`
+        is where that holds for every mutation rather than only this one.
         """
         path = self._path(light_id)
         payload = await self._transport.request("PUT", path, json=dict(command))
@@ -121,6 +125,20 @@ class Lights:
                 f"digits, underscores and dashes"
             )
         return f"{LIGHT_COLLECTION}/{light_id}"
+
+
+def _report(payload: Any, path: str) -> None:
+    """Say out loud what a read's envelope complained about.
+
+    A read has no half-succeeded half to report: `LightGet` is a Resource, not
+    an envelope, so an error the Bridge attached to a collection it answered
+    has nowhere on the wire to go. Logging it is not as good as returning it
+    and is much better than a Bridge complaining into a Gateway that never
+    mentions it. A mutation, which does have somewhere to put them, returns
+    them instead.
+    """
+    for description in errors.descriptions(payload):
+        _log.warning("bridge reported an error reading %s: %s", path, description)
 
 
 def _data(payload: Any, path: str) -> list[Mapping[str, Any]]:

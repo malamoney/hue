@@ -10,6 +10,7 @@ about the object that produced it.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -89,6 +90,11 @@ async def serving(
     lights = Lights(transport_to(bridge, certs))
     async with lights.transport, gateway_for(lights) as stub:
         yield stub
+
+
+async def hangs_up_on_everything(writer: asyncio.StreamWriter) -> None:
+    """A bridge that accepts the connection and drops it without answering."""
+    writer.close()
 
 
 def request_body(bridge: FakeBridge) -> object:
@@ -306,8 +312,15 @@ def test_a_partly_refused_change_arrives_whole(bridge_certs: BridgeCerts) -> Non
                 )
             )
 
+        # Intact means both halves and every field of them: what the bridge
+        # changed is still identified, and what it refused is still in the
+        # bridge's own words.
         assert len(response.updated) == 1
-        assert response.errors[0].description.startswith("device (light) has")
+        assert response.updated[0].rid == LIGHT_ID
+        assert response.updated[0].rtype == common_pb2.ResourceIdentifier.RTYPE_LIGHT
+        assert list(response.errors) == [
+            common_pb2.Error(description="device (light) has communication issues")
+        ]
 
     run(scenario())
 
@@ -352,6 +365,87 @@ def test_a_command_that_changes_nothing_is_refused(
 
             assert bridge.requests == []
         assert raised.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+
+    run(scenario())
+
+
+# What the bridge said
+
+
+def test_what_the_bridge_refused_reaches_the_client_in_its_own_words(
+    bridge_certs: BridgeCerts,
+) -> None:
+    """A refusal on a failed exchange is a status, and a status code alone
+    cannot say which field to fix."""
+    body = json.dumps(
+        {"errors": [{"description": "invalid value, dimming.brightness, 101"}]}
+    )
+    command = lighting_pb2.LightPut()
+    command.on.on = True
+
+    async def scenario() -> None:
+        async with (
+            FakeBridge(bridge_certs, body=body, status="400 Bad Request") as bridge,
+            serving(bridge, bridge_certs) as stub,
+        ):
+            with pytest.raises(grpc.aio.AioRpcError) as raised:
+                await stub.UpdateLight(
+                    lighting_service_pb2.UpdateLightRequest(
+                        light_id=LIGHT_ID, command=command
+                    )
+                )
+
+        assert raised.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+        assert "invalid value, dimming.brightness, 101" in raised.value.details()
+
+    run(scenario())
+
+
+def test_a_bridge_that_does_not_serve_the_path_is_unimplemented(
+    bridge_certs: BridgeCerts,
+) -> None:
+    """Older firmware, not a fault and not something to retry."""
+
+    async def scenario() -> None:
+        async with (
+            FakeBridge(bridge_certs, body="{}", status="501 Not Implemented") as bridge,
+            serving(bridge, bridge_certs) as stub,
+        ):
+            with pytest.raises(grpc.aio.AioRpcError) as raised:
+                await stub.ListLights(lighting_service_pb2.ListLightsRequest())
+
+        assert raised.value.code() == grpc.StatusCode.UNIMPLEMENTED
+
+    run(scenario())
+
+
+def test_a_lost_read_is_asked_again_and_a_lost_change_is_not(
+    bridge_certs: BridgeCerts,
+) -> None:
+    """The whole stack, not just the transport: no layer above it re-sends a
+    mutation the bridge may already have applied."""
+    command = lighting_pb2.LightPut()
+    command.on.on = True
+
+    async def scenario() -> None:
+        async with (
+            FakeBridge(bridge_certs, respond=hangs_up_on_everything) as bridge,
+            serving(bridge, bridge_certs) as stub,
+        ):
+            with pytest.raises(grpc.aio.AioRpcError) as raised:
+                await stub.ListLights(lighting_service_pb2.ListLightsRequest())
+            assert raised.value.code() == grpc.StatusCode.UNAVAILABLE
+            reads = len(bridge.requests)
+
+            with pytest.raises(grpc.aio.AioRpcError):
+                await stub.UpdateLight(
+                    lighting_service_pb2.UpdateLightRequest(
+                        light_id=LIGHT_ID, command=command
+                    )
+                )
+            assert len(bridge.requests) - reads == 1
+
+        assert reads > 1
 
     run(scenario())
 

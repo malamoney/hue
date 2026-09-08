@@ -6,21 +6,35 @@ someone. Spread across the servicers they would drift apart, and a caller
 cannot tell "your bridge is offline" from "your light id is wrong" by reading
 a message.
 
-Issue #11 owns the rest of it: Hue reports application errors inside exchanges
-it answered with HTTP 200, and those stay in the typed response —
-`MutationResponse.errors` — rather than becoming a status at all. What is here
-is the other half, where the Bridge could not be reached, would not answer, or
-answered with something unusable.
+**A status is only half of it.** Hue reports application errors inside
+exchanges it answered with HTTP 200, and those never become a status at all:
+they stay in the typed response — `MutationResponse.errors` — because a
+mutation that half succeeded has two halves to report and a status can only
+carry one. What is here is the other case, where the Bridge could not be
+reached, would not answer, or answered with a refusal. Even then the Bridge's
+own words come along: a code says *which kind* of failure it was, and only
+`invalid value, dimming.brightness, 101` says which field to fix.
 
-It lives above `hue_grpc.hue`, which talks to the Bridge and knows nothing
-about gRPC.
+Two rows of the error model have no source here yet, and are named so that
+their absence is a decision rather than an oversight. `UNAUTHENTICATED` is
+`hue_grpc.serving.interceptors`' to answer, because it is about the Gateway
+Token and no Bridge failure can produce it. `PERMISSION_DENIED` has none at
+all: this Gateway has one Gateway Token and no roles, so a caller either
+authenticates or does not, and when authorization arrives it belongs beside
+the token check rather than beside the Bridge.
+
+This module lives above `hue_grpc.hue`, which talks to the Bridge and knows
+nothing about gRPC.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import grpc
 
 from hue_grpc.codec import InvalidCommandError
+from hue_grpc.hue import errors
 from hue_grpc.hue.lights import InvalidLightIdError, LightNotFoundError
 from hue_grpc.hue.pairing import LinkButtonNotPressedError
 from hue_grpc.hue.transport import (
@@ -29,11 +43,26 @@ from hue_grpc.hue.transport import (
     BridgeUnreachableError,
 )
 
-__all__ = ["grpc_status_for"]
+__all__ = ["Status", "status_for"]
 
 
-def grpc_status_for(failure: Exception) -> grpc.StatusCode:
-    """The status a gRPC client should see for `failure`."""
+@dataclass(frozen=True)
+class Status:
+    """What one failure reaches a gRPC client as."""
+
+    #: What a client branches on.
+    code: grpc.StatusCode
+    #: What a person reads. Never carries a secret: the only failures that
+    #: reach here name resources, fields and HTTP statuses.
+    message: str
+
+
+def status_for(failure: Exception) -> Status:
+    """The status and message a gRPC client should see for `failure`."""
+    return Status(_code_for(failure), _message_for(failure))
+
+
+def _code_for(failure: Exception) -> grpc.StatusCode:
     if isinstance(failure, LinkButtonNotPressedError):
         # FAILED_PRECONDITION, not UNAVAILABLE: the caller can recover by
         # walking to the Bridge and asking again, and retrying before they do
@@ -76,8 +105,29 @@ def _for_http(status_code: int) -> grpc.StatusCode:
         return grpc.StatusCode.INVALID_ARGUMENT
     if status_code == 429:
         return grpc.StatusCode.RESOURCE_EXHAUSTED
+    if status_code in (405, 501):
+        # The path exists and this Bridge does not serve it that way: older
+        # firmware, or a resource this model does not have. Retrying is
+        # pointless and the request was not wrong, which is neither
+        # UNAVAILABLE nor INVALID_ARGUMENT. Checked before the 5xx sweep
+        # below, which would otherwise call 501 a transient fault.
+        return grpc.StatusCode.UNIMPLEMENTED
     if status_code >= 500:
         # The Bridge is up enough to answer and not well enough to serve;
         # a client retrying with backoff is the right response.
         return grpc.StatusCode.UNAVAILABLE
     return grpc.StatusCode.INTERNAL
+
+
+def _message_for(failure: Exception) -> str:
+    """What to tell the client, in Hue's words where Hue supplied any.
+
+    A failed CLIP exchange carries an error envelope, and it is the half of
+    the answer a status code cannot hold: `bridge returned HTTP 400` does not
+    tell anyone which field to fix.
+    """
+    if isinstance(failure, BridgeResponseError):
+        said = errors.descriptions(failure.payload)
+        if said:
+            return f"{failure}: {'; '.join(said)}"
+    return str(failure)
