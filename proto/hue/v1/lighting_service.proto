@@ -1,0 +1,72 @@
+// Hand-written. Unlike its neighbours in this directory, nothing generates
+// this file: OpenAPI describes paths and schemas, and has no notion of a
+// service, so the RPCs and their request and response envelopes are ours to
+// state. `proto/manifest.toml` says the same thing about `ApiResponse` —
+// its `data` is an untyped array, so the envelope is typed here per service
+// rather than once, generically, as something no client could read.
+//
+// Field numbers here are assigned by hand and, like the generated ones in
+// `proto/field-numbers.json`, are never reused. See
+// docs/adr/0003-committed-field-number-lock.md.
+
+syntax = "proto3";
+
+package hue.v1;
+
+import "hue/v1/common.proto";
+import "hue/v1/lighting.proto";
+
+// The lights on the Bridge this Gateway is paired with.
+//
+// No request carries a Bridge ID: one Gateway serves one Bridge, which is the
+// supported subset. Adding more Bridges later adds a field rather than
+// changing one, so nothing here has to be rearranged for it.
+service LightingService {
+  // Every light the Bridge knows about.
+  rpc ListLights(ListLightsRequest) returns (ListLightsResponse);
+
+  // One light by its Resource id.
+  rpc GetLight(GetLightRequest) returns (LightGet);
+
+  // Change one light. Only the fields set in `command` are sent to the
+  // Bridge, so an unset `dimming` leaves the brightness where it was.
+  rpc UpdateLight(UpdateLightRequest) returns (MutationResponse);
+}
+
+// Deliberately empty. Hue serves the whole collection in one response and
+// offers nothing to filter or page by; the message exists so that adding
+// either later is a field rather than a new method.
+message ListLightsRequest {}
+
+message ListLightsResponse {
+  repeated LightGet lights = 1;
+}
+
+message GetLightRequest {
+  // The Resource id, as `LightGet.id` reports it.
+  string light_id = 1;
+}
+
+message UpdateLightRequest {
+  string light_id = 1;
+
+  // What to change. Presence is the whole contract: a field left unset is
+  // absent from the request the Bridge receives, and an unset field is never
+  // the same as a zero one. `LightPut.on` unset leaves the light alone;
+  // `on { on: false }` turns it off.
+  LightPut command = 2;
+}
+
+// What a mutation did, which is not always all or nothing: the Bridge can
+// report both a change it made and an error about the same request, in an
+// exchange it answered with HTTP 200. Collapsing that into a gRPC status
+// would throw half the answer away, so both halves are here.
+message MutationResponse {
+  // The Resources the Bridge says it changed.
+  repeated ResourceIdentifier updated = 1;
+
+  // What the Bridge refused, in its own words. `Error` is generated from the
+  // spec, so a Bridge that reports more than a description reaches clients
+  // once the spec says it can — rather than being flattened here.
+  repeated Error errors = 2;
+}

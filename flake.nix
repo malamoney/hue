@@ -118,10 +118,13 @@
               export PYTHONPATH="$PWD/tools"
               export PYTHONDONTWRITEBYTECODE=1
 
-              # Regenerate into an emptied tree, so a file the manifest no
-              # longer produces shows up as a difference rather than
-              # surviving untouched.
-              rm -rf proto/hue
+              # Take out everything the generator claims, so a file the
+              # manifest no longer produces shows up as a difference rather
+              # than surviving untouched. Hand-written definitions — the
+              # services, which OpenAPI has no notion of — say so in their
+              # first line and stay where they are.
+              grep -rl 'Generated from the Hue OpenAPI document' proto/hue \
+                | while read -r generated; do rm "$generated"; done
               python -m protogen --manifest proto/manifest.toml
 
               diff -ru ${self}/proto ./proto
@@ -161,8 +164,19 @@
 
               grep -q 'grpc.health.v1.Health' services.txt
               grep -q 'grpc.reflection.v1alpha.ServerReflection' services.txt
+              grep -q 'hue.v1.LightingService' services.txt
               grpcurl -plaintext -d '{}' "127.0.0.1:$port" \
                 grpc.health.v1.Health/Check | grep -q SERVING
+
+              # Issue #10's service, on a gateway that has never paired: it
+              # answers, and what it answers is what to do about that.
+              if grpcurl -plaintext -d '{}' "127.0.0.1:$port" \
+                hue.v1.LightingService/ListLights >lighting.txt 2>&1; then
+                echo "an unpaired gateway listed lights" >&2
+                exit 1
+              fi
+              grep -q 'FailedPrecondition' lighting.txt
+              grep -q 'pair' lighting.txt
 
               # systemd stops the unit this way, and expects exit 0.
               kill -TERM $gateway

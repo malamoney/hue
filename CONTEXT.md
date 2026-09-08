@@ -66,6 +66,14 @@ _Avoid_: bulb, lamp, light
 A service exposed by a Device that emits light. One Device may expose several services, only one of which is a Light.
 _Avoid_: bulb, lamp, device
 
+**Command**:
+The writable half of a Resource — `LightPut` — which is a different shape from what reading one returns. A field left unset in a Command is not part of it and does not reach the Bridge, so "leave the brightness alone" and "set the brightness to zero" are different Commands.
+_Avoid_: update, patch, state, payload
+
+**Mutation**:
+One Command applied to one Resource, and what the Bridge made of it. A Mutation can both succeed and fail: the Bridge reports what it changed and what it refused in the same successful exchange, and both halves are the answer.
+_Avoid_: write, transaction, mutation response
+
 ### Serving
 
 **Listener**:

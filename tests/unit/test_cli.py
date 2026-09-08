@@ -1,19 +1,23 @@
 """The command-line entry point, which is what the systemd unit invokes.
 
-Two things matter here. Every flag has to land on the right field of the
+Three things matter here. Every flag has to land on the right field of the
 config, because the NixOS module in issue #13 will drive the service entirely
-through them. And a listener that cannot legally exist has to be refused with
-a line, not a traceback: a unit that will never start should say why in the
-first line of its journal.
+through them. A listener that cannot legally exist has to be refused with a
+line, not a traceback: a unit that will never start should say why in the
+first line of its journal. And the Registry is read on the way up and written
+by `pair`, so what those two do to the file is what decides whether a walk to
+the bridge has to happen twice.
 """
 
 from __future__ import annotations
 
 import importlib
 import json
+import logging
 import os
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import time
@@ -22,11 +26,20 @@ from pathlib import Path
 
 import grpc
 import pytest
-from conftest import BridgeCerts, run
+from conftest import BRIDGE_ID, BridgeCerts, run
 from grpc_health.v1 import health_pb2, health_pb2_grpc
 
-from hue_grpc import __version__
-from hue_grpc.cli import build_parser, config_from, main
+from hue.v1 import lighting_service_pb2
+from hue.v1 import lighting_service_pb2_grpc as lighting_grpc
+from hue_grpc import __version__, cli
+from hue_grpc.cli import build_parser, config_from, default_instance, main
+from hue_grpc.hue.pairing import (
+    INSTANCE_NAME_LIMIT,
+    LinkButtonNotPressedError,
+    PairedSecrets,
+    device_type,
+)
+from hue_grpc.lighting.service import SERVICE_NAME
 from hue_grpc.serving.config import GatewayConfig
 
 PYPROJECT = Path(__file__).parents[2] / "pyproject.toml"
@@ -188,3 +201,182 @@ def await_listening_line(
             )
         time.sleep(0.05)
     raise AssertionError(f"gateway never reported listening: {log_file.read_text()}")
+
+
+# Pairing, and the registry the server reads on its way up
+
+
+@pytest.fixture
+def state_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """A registry of this test's own, wherever the gateway would look."""
+    monkeypatch.delenv("STATE_DIRECTORY", raising=False)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    return tmp_path / "hue-grpc" / "registry.json"
+
+
+def registered(state_home: Path) -> dict[str, object]:
+    bridge = json.loads(state_home.read_text())["bridge"]
+    assert isinstance(bridge, dict)
+    return bridge
+
+
+def test_pairing_needs_to_know_which_bridge() -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        main(["pair", "--bridge-address", "192.168.86.223"])
+
+    assert exit_info.value.code == 2
+
+
+def test_the_instance_name_fits_the_bridge_s_limit() -> None:
+    assert len(default_instance()) <= INSTANCE_NAME_LIMIT
+    assert device_type(default_instance())
+
+
+def test_pairing_writes_the_minted_key_into_the_registry(
+    monkeypatch: pytest.MonkeyPatch, state_home: Path
+) -> None:
+    async def mint(*, address: str, bridge_id: str, instance: str) -> PairedSecrets:
+        assert (address, bridge_id) == ("192.168.86.223", BRIDGE_ID)
+        return PairedSecrets(application_key="minted", client_key="also-minted")
+
+    monkeypatch.setattr(cli, "_mint", mint)
+
+    code = main(
+        ["pair", "--bridge-address", "192.168.86.223", "--bridge-id", BRIDGE_ID]
+    )
+
+    assert code == 0
+    assert registered(state_home)["application_key"] == "minted"
+    assert registered(state_home)["id"] == BRIDGE_ID
+    # Owner-only: the file holds the application key in the clear.
+    assert stat.S_IMODE(state_home.stat().st_mode) == 0o600
+
+
+def test_pairing_twice_would_strand_a_working_key_and_is_refused(
+    monkeypatch: pytest.MonkeyPatch, state_home: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    async def mint(*, address: str, bridge_id: str, instance: str) -> PairedSecrets:
+        raise AssertionError("the bridge should not have been asked")
+
+    monkeypatch.setattr(cli, "_mint", mint)
+    state_home.parent.mkdir(parents=True)
+    state_home.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "bridge": {
+                    "id": BRIDGE_ID,
+                    "address": "192.168.86.223",
+                    "model": None,
+                    "firmware": None,
+                    "last_contact": None,
+                    "application_key": "the-first-key",
+                    "client_key": None,
+                },
+            }
+        )
+    )
+
+    with caplog.at_level(logging.ERROR):
+        code = main(
+            ["pair", "--bridge-address", "192.168.86.223", "--bridge-id", BRIDGE_ID]
+        )
+
+    assert code == 1
+    assert "already registered" in caplog.text
+    assert registered(state_home)["application_key"] == "the-first-key"
+
+
+def test_an_unpressed_link_button_says_what_to_do_about_it(
+    monkeypatch: pytest.MonkeyPatch, state_home: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    async def mint(*, address: str, bridge_id: str, instance: str) -> PairedSecrets:
+        raise LinkButtonNotPressedError(101, "link button not pressed")
+
+    monkeypatch.setattr(cli, "_mint", mint)
+
+    with caplog.at_level(logging.ERROR):
+        code = main(
+            ["pair", "--bridge-address", "192.168.86.223", "--bridge-id", BRIDGE_ID]
+        )
+
+    assert code == 1
+    assert "link button" in caplog.text
+    assert not state_home.exists()
+
+
+def test_a_registry_it_cannot_read_stops_the_gateway_starting(
+    state_home: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Never "nothing is registered": that pairs again and orphans a key."""
+    state_home.parent.mkdir(parents=True)
+    state_home.write_text("{ this is not a registry")
+
+    with caplog.at_level(logging.ERROR):
+        code = main(["--port", "0"])
+
+    assert code == 1
+    assert "could not start" in caplog.text
+
+
+def test_the_binary_serves_the_registered_bridge(state_home: Path) -> None:
+    """The wiring, as a process: registry entry in, lighting calls out.
+
+    The bridge is a port nothing listens on, so the call fails — but it fails
+    as UNAVAILABLE, which is only reachable if the entry became a transport
+    and the transport became this service.
+    """
+    state_home.parent.mkdir(parents=True)
+    state_home.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "bridge": {
+                    "id": BRIDGE_ID,
+                    # Nothing listens on port 1, and nothing is meant to.
+                    "address": "127.0.0.1:1",
+                    "model": None,
+                    "firmware": None,
+                    "last_contact": None,
+                    "application_key": "an-application-key",
+                    "client_key": None,
+                },
+            }
+        )
+    )
+    port = free_port()
+    log_file = state_home.parent / "gateway.log"
+    with log_file.open("wb") as log:
+        gateway = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "from hue_grpc.cli import main; raise SystemExit(main())",
+                "--port",
+                str(port),
+            ],
+            stdout=log,
+            stderr=log,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        )
+    try:
+        listening = await_listening_line(log_file, gateway)
+        assert SERVICE_NAME in listening["services"]  # type: ignore[operator]
+
+        async def scenario() -> grpc.StatusCode:
+            async with grpc.aio.insecure_channel(f"127.0.0.1:{port}") as channel:
+                stub = lighting_grpc.LightingServiceStub(channel)
+                try:
+                    await stub.ListLights(lighting_service_pb2.ListLightsRequest())
+                except grpc.aio.AioRpcError as refused:
+                    return refused.code()
+                raise AssertionError("a bridge on port 1 answered")
+
+        assert run(scenario()) == grpc.StatusCode.UNAVAILABLE
+
+        gateway.send_signal(signal.SIGTERM)
+        assert gateway.wait(timeout=30) == 0
+    finally:
+        if gateway.poll() is None:  # pragma: no cover - only on a failure
+            gateway.kill()
+            gateway.wait(timeout=30)
