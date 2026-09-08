@@ -65,7 +65,10 @@ files = ["src", "tests", "tools"]
 mypy_path = "src:tools"
 # Generated protobuf code, which only exists once codegen has run. Checking
 # protoc's output says nothing about this project, and it is not ours to fix.
-exclude = "^src/hue/"
+# tests/fake_hue is build tooling with its own deps (cryptography, httpx) and
+# its own flake check, like tools/protogen; it also carries a second conftest
+# module, which mypy's default finder cannot place alongside tests/unit's.
+exclude = "(^src/hue/|^tests/fake_hue/)"
 
 # PyYAML ships no type information.
 [[tool.mypy.overrides]]

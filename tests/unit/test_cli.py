@@ -236,7 +236,9 @@ def test_the_instance_name_fits_the_bridge_s_limit() -> None:
 def test_pairing_writes_the_minted_key_into_the_registry(
     monkeypatch: pytest.MonkeyPatch, state_home: Path
 ) -> None:
-    async def mint(*, address: str, bridge_id: str, instance: str) -> PairedSecrets:
+    async def mint(
+        *, address: str, bridge_id: str, instance: str, ca_pem: str | None = None
+    ) -> PairedSecrets:
         assert (address, bridge_id) == ("192.168.86.223", BRIDGE_ID)
         return PairedSecrets(application_key="minted", client_key="also-minted")
 
@@ -256,7 +258,9 @@ def test_pairing_writes_the_minted_key_into_the_registry(
 def test_pairing_twice_would_strand_a_working_key_and_is_refused(
     monkeypatch: pytest.MonkeyPatch, state_home: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    async def mint(*, address: str, bridge_id: str, instance: str) -> PairedSecrets:
+    async def mint(
+        *, address: str, bridge_id: str, instance: str, ca_pem: str | None = None
+    ) -> PairedSecrets:
         raise AssertionError("the bridge should not have been asked")
 
     monkeypatch.setattr(cli, "_mint", mint)
@@ -291,7 +295,9 @@ def test_pairing_twice_would_strand_a_working_key_and_is_refused(
 def test_an_unpressed_link_button_says_what_to_do_about_it(
     monkeypatch: pytest.MonkeyPatch, state_home: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    async def mint(*, address: str, bridge_id: str, instance: str) -> PairedSecrets:
+    async def mint(
+        *, address: str, bridge_id: str, instance: str, ca_pem: str | None = None
+    ) -> PairedSecrets:
         raise LinkButtonNotPressedError(101, "link button not pressed")
 
     monkeypatch.setattr(cli, "_mint", mint)
@@ -394,9 +400,14 @@ def captured_entry(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
     seen: dict[str, object] = {}
 
     async def fake_serve(
-        config: GatewayConfig, entry: object, *, event_queue_size: int
+        config: GatewayConfig,
+        entry: object,
+        *,
+        ca_pem: str | None = None,
+        event_queue_size: int,
     ) -> None:
         seen["entry"] = entry
+        seen["ca_pem"] = ca_pem
 
     monkeypatch.setattr(cli, "_serve", fake_serve)
     return seen
@@ -431,6 +442,111 @@ def test_static_flags_build_an_entry_and_skip_the_registry(
     assert entry.address == "192.168.86.5"  # type: ignore[attr-defined]
     assert entry.application_key == "static-key"  # type: ignore[attr-defined]
     assert entry.client_key == "static-client"  # type: ignore[attr-defined]
+
+
+def test_the_bridge_ca_file_reaches_the_transport(
+    captured_entry: dict[str, object],
+    bridge_certs: BridgeCerts,
+    tmp_path: Path,
+) -> None:
+    credentials = tmp_path / "hue-credentials"
+    credentials.write_text("application-key=static-key\n")
+
+    code = main(
+        [
+            "--port",
+            "0",
+            "--bridge-address",
+            "192.168.86.5",
+            "--bridge-id",
+            BRIDGE_ID,
+            "--credentials-file",
+            str(credentials),
+            "--bridge-ca-file",
+            str(bridge_certs.ca_file),
+        ]
+    )
+
+    assert code == 0
+    assert captured_entry["ca_pem"] == bridge_certs.ca_file.read_text()
+
+
+def test_no_bridge_ca_file_leaves_the_vendored_root_in_place(
+    captured_entry: dict[str, object], tmp_path: Path
+) -> None:
+    credentials = tmp_path / "hue-credentials"
+    credentials.write_text("application-key=static-key\n")
+
+    main(
+        [
+            "--port",
+            "0",
+            "--bridge-address",
+            "192.168.86.5",
+            "--bridge-id",
+            BRIDGE_ID,
+            "--credentials-file",
+            str(credentials),
+        ]
+    )
+
+    assert captured_entry["ca_pem"] is None
+
+
+def test_a_missing_bridge_ca_file_is_a_line_not_a_traceback(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--bridge-ca-file", str(tmp_path / "absent.pem")])
+
+    assert exit_info.value.code == 2
+    printed = capsys.readouterr().err
+    assert "could not read bridge CA file" in printed
+    assert "Traceback" not in printed
+
+
+def test_a_bridge_ca_file_that_is_not_a_certificate_is_refused(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    not_a_cert = tmp_path / "junk.pem"
+    not_a_cert.write_text("just some text\n")
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--bridge-ca-file", str(not_a_cert)])
+
+    assert exit_info.value.code == 2
+    assert "no PEM certificate" in capsys.readouterr().err
+
+
+def test_pairing_verifies_against_the_given_bridge_ca_file(
+    monkeypatch: pytest.MonkeyPatch,
+    state_home: Path,
+    bridge_certs: BridgeCerts,
+) -> None:
+    seen: dict[str, object] = {}
+
+    async def mint(
+        *, address: str, bridge_id: str, instance: str, ca_pem: str | None = None
+    ) -> PairedSecrets:
+        seen["ca_pem"] = ca_pem
+        return PairedSecrets(application_key="minted", client_key=None)
+
+    monkeypatch.setattr(cli, "_mint", mint)
+
+    code = main(
+        [
+            "pair",
+            "--bridge-address",
+            "192.168.86.223",
+            "--bridge-id",
+            BRIDGE_ID,
+            "--bridge-ca-file",
+            str(bridge_certs.ca_file),
+        ]
+    )
+
+    assert code == 0
+    assert seen["ca_pem"] == bridge_certs.ca_file.read_text()
 
 
 def test_a_static_bridge_without_its_id_is_a_line_not_a_traceback(

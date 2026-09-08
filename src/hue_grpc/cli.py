@@ -117,6 +117,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="file holding the bearer token clients must present. A file, "
         "never a flag value: ps shows arguments to every user on the host.",
     )
+    parser.add_argument(
+        "--bridge-ca-file",
+        type=Path,
+        metavar="PATH",
+        help="PEM CA to verify the bridge's certificate against, instead of "
+        "the vendored Philips root. The common-name check still runs; this "
+        "only swaps the trust anchor, for a bridge behind a certificate this "
+        "gateway was not shipped knowing about.",
+    )
     static = parser.add_argument_group(
         "static bridge",
         "Describe one bridge by configuration instead of pairing. "
@@ -239,6 +248,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="which gateway this is, as it appears in the bridge's app list "
         "(default: %(default)s)",
     )
+    pair_command.add_argument(
+        "--bridge-ca-file",
+        type=Path,
+        metavar="PATH",
+        help="PEM CA to verify the bridge's certificate against, instead of "
+        "the vendored Philips root",
+    )
     return parser
 
 
@@ -315,10 +331,33 @@ def _static_bridge_entry(args: argparse.Namespace) -> RegistryEntry | None:
     )
 
 
+def _bridge_ca_pem(path: Path | None) -> str | None:
+    """The trust anchor for the Bridge connection, read from `path`.
+
+    `None` — the default — leaves the vendored Philips `root-bridge` CA in
+    place. A path replaces it, and only it: the Bridge's certificate is
+    verified against this CA, and the common-name check in `hue_grpc.hue.tls`
+    still runs on top. It is how a Bridge behind a certificate this Gateway
+    was not shipped knowing about is reached without turning verification off.
+    """
+    if path is None:
+        return None
+    try:
+        pem = path.read_text(encoding="utf-8")
+    except OSError as unreadable:
+        raise ValueError(
+            f"could not read bridge CA file {path}: {unreadable}"
+        ) from unreadable
+    if "BEGIN CERTIFICATE" not in pem:
+        raise ValueError(f"bridge CA file {path} holds no PEM certificate")
+    return pem
+
+
 async def _serve(
     config: GatewayConfig,
     entry: RegistryEntry | None,
     *,
+    ca_pem: str | None = None,
     event_queue_size: int = DEFAULT_QUEUE_SIZE,
 ) -> None:
     """Listen, serving `entry`'s Bridge if there is one.
@@ -339,6 +378,7 @@ async def _serve(
         bridge_id=entry.bridge_id,
         address=entry.address,
         application_key=entry.application_key,
+        ca_pem=ca_pem,
     )
     async with transport:
         # One transport for both services: a Bridge is one host, one
@@ -361,15 +401,22 @@ async def _serve(
 
 
 async def _mint(
-    *, address: str, bridge_id: str, instance: str
+    *, address: str, bridge_id: str, instance: str, ca_pem: str | None = None
 ) -> pairing.PairedSecrets:
     """One Pairing exchange, over a connection verified as `bridge_id`."""
-    async with HueTransport(bridge_id=bridge_id, address=address) as transport:
+    async with HueTransport(
+        bridge_id=bridge_id, address=address, ca_pem=ca_pem
+    ) as transport:
         return await pairing.pair(transport, instance=instance)
 
 
 def pair_with_bridge(args: argparse.Namespace) -> int:
     """The `pair` subcommand: mint an Application Key and write it down."""
+    try:
+        ca_pem = _bridge_ca_pem(args.bridge_ca_file)
+    except ValueError as unusable:
+        _log.error("%s", unusable)
+        return 1
     registry = Registry(default_registry_path())
     try:
         registered = registry.load()
@@ -393,6 +440,7 @@ def pair_with_bridge(args: argparse.Namespace) -> int:
                 address=args.bridge_address,
                 bridge_id=args.bridge_id,
                 instance=args.instance,
+                ca_pem=ca_pem,
             )
         )
     except pairing.LinkButtonNotPressedError:
@@ -431,6 +479,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         config = config_from(args)
         static = _static_bridge_entry(args)
+        ca_pem = _bridge_ca_pem(args.bridge_ca_file)
     except (OSError, ValueError, CredentialsFileError) as unusable:
         # Exit 2 and a one-line message, not a traceback: a unit that will
         # never start should say why in the first line of its journal.
@@ -452,7 +501,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             _log.error("gateway could not start: %s", unreadable)
             return 1
     try:
-        asyncio.run(_serve(config, entry, event_queue_size=args.event_queue_size))
+        asyncio.run(
+            _serve(
+                config,
+                entry,
+                ca_pem=ca_pem,
+                event_queue_size=args.event_queue_size,
+            )
+        )
     except OSError as unavailable:
         _log.error("gateway could not start: %s", unavailable)
         return 1

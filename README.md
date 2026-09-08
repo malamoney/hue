@@ -248,6 +248,10 @@ server enforces on startup.
 `bridge.*` describes one Bridge without pairing or discovery: the address and
 id are configuration, and the Application Key comes from the Credentials File
 named by `bridge.credentialsFile`, loaded through systemd `LoadCredential`.
+`bridge.caFile` points certificate verification at a CA other than the
+vendored Philips `root-bridge` — the identity check still runs on top, so it
+swaps the trust anchor rather than weakening anything, for a Bridge behind a
+certificate this Gateway was not shipped knowing about.
 That path — with `grpc.tls.privateKeyFile` and `grpc.tokenFile` — is the only
 way a secret reaches the service: never an `ExecStart` argument, a
 Nix-rendered environment variable, or anything else that lands in the store.
@@ -262,6 +266,11 @@ event queue size — is reachable through `extraArgs`.
 
 The aggressive half of the sandbox — a syscall filter, tighter namespace and
 capability limits — is a later pass, tested against a booted VM.
+
+`checks.integration-vm` (Linux only) is that booted VM: two nodes, one running
+the module's unit and one running a fake Bridge, exercising a read, a
+mutation, an event stream, a restart, and a bridge interruption end to end,
+and confirming the Application Key never reaches the journal.
 
 ## State
 

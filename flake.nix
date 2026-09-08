@@ -20,6 +20,9 @@
     {
       packages = forAllSystems (pkgs: rec {
         hue-grpc = pkgs.python312Packages.callPackage ./nix/package.nix { };
+        # The fake Bridge the NixOS integration test (issue #14) talks to. Not
+        # part of the gateway; a test artifact that happens to be reusable.
+        fake-hue = pkgs.python312Packages.callPackage ./nix/fake-hue.nix { };
         default = hue-grpc;
       });
 
@@ -97,6 +100,34 @@
                 export PYTHONPATH="$PWD/tools"
                 export PYTHONDONTWRITEBYTECODE=1
                 pytest tests/protogen -q -p no:cacheprovider
+                touch $out
+              '';
+
+          # The fake Hue Bridge (issue #14), which the NixOS integration test
+          # runs on its own node. Its own check because its dependency set —
+          # cryptography, httpx — is not the gateway's, exactly like protogen.
+          fake-hue =
+            pkgs.runCommand "hue-grpc-fake-hue"
+              {
+                nativeBuildInputs = [
+                  (pkgs.python312.withPackages (ps: [
+                    ps.pytest
+                    ps.cryptography
+                    ps.httpx
+                    ps.mypy
+                  ]))
+                ];
+              }
+              ''
+                export PYTHONDONTWRITEBYTECODE=1
+                export MYPY_CACHE_DIR="$TMPDIR/mypy"
+
+                cd ${self}/tools
+                mypy
+
+                cd ${self}
+                export PYTHONPATH="$PWD/tools"
+                pytest tests/fake_hue -q -p no:cacheprovider
                 touch $out
               '';
 
@@ -241,6 +272,7 @@
                   address = "192.168.86.223";
                   id = "ECB5FAFFFE334703";
                   credentialsFile = "/run/secrets/hue-grpc";
+                  caFile = "/etc/hue-grpc/bridge-ca.pem";
                 };
               };
               bare = unitOf { };
@@ -287,12 +319,24 @@
               want "$configured" '--bridge-address 192.168.86.223'
               want "$configured" '--bridge-id ECB5FAFFFE334703'
 
+              # A CA cert is not a secret: it is a plain argument, and its
+              # path is rendered as given rather than through a credential.
+              want "$configured" '--bridge-ca-file /etc/hue-grpc/bridge-ca.pem'
+              deny "$configured" 'LoadCredential=bridge-ca'
+
               # Bare enable: a running listener, no bridge, nothing to load.
               deny "$bare" '--bridge-address'
+              deny "$bare" '--bridge-ca-file'
               deny "$bare" 'LoadCredential='
 
               touch $out
             '';
+
+          # Issue #14: the whole thing in a booted VM — the module's unit, a
+          # fake Bridge on another node, the Application Key by LoadCredential,
+          # a read, a mutation, an event stream, a restart, a bridge
+          # interruption, and a journal with no key in it.
+          integration-vm = import ./nix/integration-test.nix { inherit pkgs self; };
         }
       );
 

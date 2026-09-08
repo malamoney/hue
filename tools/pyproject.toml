@@ -1,0 +1,36 @@
+# Packaging for the fake Hue Bridge only.
+#
+# The NixOS VM integration test (issue #14) needs `fake_hue` as a runnable
+# program on its own VM node, so it is built as `packages.fake-hue` rather
+# than left on PYTHONPATH like `tools/protogen`. Its one dependency is
+# `cryptography`, for minting the Bridge-shaped certificate.
+#
+# The runtime Gateway does not depend on this, and its own build (nix/package.nix)
+# does not include this file.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fake-hue"
+version = "0"
+description = "A fake Philips Hue Bridge for hue-grpc's tests."
+requires-python = ">=3.12"
+dependencies = ["cryptography"]
+
+[project.scripts]
+fake-hue = "fake_hue.__main__:main"
+
+[tool.setuptools]
+packages = ["fake_hue"]
+
+# Type-checking config for `checks.fake-hue`, which runs mypy from this
+# directory. Kept out of the repo-root pyproject because that one's file set
+# spans two `conftest` modules mypy's default finder cannot place together.
+[tool.mypy]
+python_version = "3.12"
+strict = true
+explicit_package_bases = true
+mypy_path = [".", "../tests/fake_hue"]
+files = ["fake_hue", "../tests/fake_hue"]

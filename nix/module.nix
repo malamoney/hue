@@ -7,6 +7,9 @@
 # Token — arrive only through systemd's `LoadCredential` and never touch the
 # store, an `ExecStart` argument, or a Nix-rendered environment variable.
 #
+# `bridge.caFile` is config, not a secret — a CA certificate — so it is a
+# plain `ExecStart` argument like the address and the Bridge ID.
+#
 # The aggressive half of the sandbox — a `SystemCallFilter`, namespace and
 # capability restrictions beyond what outbound HTTPS needs — is issue #15's
 # tightening pass, done against the VM test from issue #14. This unit carries
@@ -47,6 +50,13 @@ let
     cfg.bridge.id
     "--credentials-file"
     "%d/credentials"
+  ]
+  # A CA cert is not a secret, so it is a plain ExecStart argument rather than
+  # a credential. It swaps the trust anchor for the Bridge connection; the
+  # common-name check the server makes on top of it is unaffected.
+  ++ lib.optionals (cfg.bridge.caFile != null) [
+    "--bridge-ca-file"
+    cfg.bridge.caFile
   ];
 
   tlsArgs = [
@@ -152,6 +162,20 @@ in
       '';
     };
 
+    bridge.caFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "/etc/hue-grpc/bridge-ca.pem";
+      description = ''
+        PEM CA the Bridge's certificate is verified against, instead of the
+        Philips {file}`root-bridge` CA the package ships with. The server's
+        common-name check still runs on top; this only replaces the trust
+        anchor, for a Bridge behind a certificate this Gateway was not
+        shipped knowing about. Not a secret, and rendered straight into
+        {env}`ExecStart`.
+      '';
+    };
+
     grpc.tls.enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -242,6 +266,10 @@ in
       {
         assertion = (cfg.bridge.address != null) == (cfg.bridge.credentialsFile != null);
         message = "services.hue-grpc: bridge.address needs bridge.credentialsFile, and the reverse.";
+      }
+      {
+        assertion = cfg.bridge.caFile != null -> cfg.bridge.address != null;
+        message = "services.hue-grpc: bridge.caFile only applies with a configured bridge.";
       }
     ];
 
