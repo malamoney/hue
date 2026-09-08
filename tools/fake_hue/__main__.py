@@ -1,8 +1,8 @@
 """``python -m fake_hue`` — run the fake Bridge, or mint its certificate.
 
-``serve`` (the default) starts the HTTPS server. ``mint-certs`` writes a
-CA/leaf pair to a directory and exits, so a build step can mint once and hand
-the CA to the Gateway and the leaf to a later ``serve`` on another host.
+With no subcommand it starts the HTTPS server. ``mint-certs`` writes a CA/leaf
+pair to a directory and exits, so a build step can mint once and hand the CA
+to the Gateway and the leaf to a later run on another host.
 """
 
 from __future__ import annotations

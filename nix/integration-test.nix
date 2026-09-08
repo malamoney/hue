@@ -82,14 +82,16 @@ pkgs.testers.runNixOSTest {
           wantedBy = [ ];
           unitConfig.ConditionPathExists = keyPath;
           serviceConfig = {
+            # Serving is the default; there is no `serve` subcommand.
             ExecStart = builtins.concatStringsSep " " [
-              "${fake-hue}/bin/fake-hue serve"
+              "${fake-hue}/bin/fake-hue"
               "--bridge-id ${bridgeId}"
               "--listen-address 0.0.0.0 --port ${toString bridgePort}"
               "--cert-dir ${bridgeCerts}"
               "--application-key-file ${keyPath}"
               "--log"
             ];
+            Type = "exec";
             DynamicUser = true;
           };
         };
@@ -173,6 +175,19 @@ pkgs.testers.runNixOSTest {
         )
 
 
+    def poke_light(node, light):
+        # Change the light once a second for a while, in the background: the
+        # gateway only forwards events for changes made after its upstream
+        # stream is up, and that can lag a fresh subscriber by a moment.
+        body = f'{{"lightId":"{light}","command":{{"dimming":{{"brightness":55}}}}}}'
+        node.succeed(
+            "for _ in $(seq 30); do "
+            f"grpcurl -plaintext -d '{body}' 127.0.0.1:50051 "
+            "hue.v1.LightingService/UpdateLight >/dev/null 2>&1 || true; "
+            "sleep 1; done & echo poking"
+        )
+
+
     key_file = "${keyPath}"
     creds = "${credentialsPath}"
 
@@ -182,7 +197,7 @@ pkgs.testers.runNixOSTest {
     bridge.succeed(f"printf '%s' '{key}' > {key_file}")
     bridge.systemctl("start fake-hue.service")
     bridge.wait_for_unit("fake-hue.service")
-    bridge.wait_for_open_port(${toString bridgePort})
+    bridge.wait_for_open_port(${toString bridgePort}, timeout=60)
 
     # Step 3: the key reaches the gateway as a Credentials File, nothing more.
     gateway.succeed("install -d -m 0700 /run/hue-grpc-secret")
@@ -217,8 +232,8 @@ pkgs.testers.runNixOSTest {
         "> /tmp/events.json 2>/tmp/events.err & echo started"
     )
     wait_for_subscriber(gateway, before)
-    update_light(gateway, light_id, "dimming", '{"brightness":77}')
-    gateway.wait_until_succeeds("grep -q '\"change\"' /tmp/events.json", timeout=20)
+    poke_light(gateway, light_id)
+    gateway.wait_until_succeeds("grep -q '\"change\"' /tmp/events.json", timeout=40)
 
     # Step 8: a paired gateway, restarted, still serves the same Bridge from
     # the registry.json it wrote on first start — the persisted state here.
@@ -256,7 +271,7 @@ pkgs.testers.runNixOSTest {
     bridge.systemctl("stop fake-hue.service")
     gateway.sleep(5)
     bridge.systemctl("start fake-hue.service")
-    bridge.wait_for_open_port(${toString bridgePort})
+    bridge.wait_for_open_port(${toString bridgePort}, timeout=60)
     gateway.wait_until_succeeds(
         "grep -qF CAUSE_RECONNECTED /tmp/gap.json", timeout=90
     )
