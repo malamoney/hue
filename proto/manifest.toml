@@ -1,0 +1,29 @@
+# What the generator produces. Run `python -m protogen --manifest proto/manifest.toml`.
+#
+# Scope is the five supported paths: pairing, light list/get/update, and the
+# event stream. Schemas reached transitively that no file claims land in
+# `default_file`, so shared building blocks need no assignment by hand.
+
+spec = "openapi.yaml"
+out_dir = "proto"
+package = "hue.v1"
+default_file = "hue/v1/common.proto"
+numbers = "proto/field-numbers.json"
+
+[files."hue/v1/common.proto"]
+roots = ["ResourceIdentifier", "Error", "ApiResponse"]
+
+[files."hue/v1/lighting.proto"]
+roots = ["LightGet", "LightPut"]
+
+# Hue rejects setting colour and colour temperature in the same request, so
+# modelling them as a oneof makes that request unrepresentable rather than
+# something the gateway has to validate and reject.
+#
+# UNCONFIRMED against real hardware: verify in #16 before anything depends on
+# it. If Hue does accept both, this line is what to remove.
+[files."hue/v1/lighting.proto".oneofs.LightPut]
+colour = ["color", "color_temperature"]
+
+[files."hue/v1/events.proto"]
+roots = ["Event"]

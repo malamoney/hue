@@ -1,0 +1,227 @@
+// Generated from the Hue OpenAPI document. Do not edit.
+// 
+// Regenerate with `python -m protogen`. See
+// docs/adr/0001-custom-openapi-to-proto-generator.md.
+
+syntax = "proto3";
+
+package hue.v1;
+
+import "hue/v1/common.proto";
+
+// Common resource properties including the owner
+message LightGet {
+  enum Mode {
+    MODE_UNSPECIFIED = 0;
+    MODE_NORMAL = 1;
+    MODE_STREAMING = 2;
+  }
+  // Deprecated, use metadata on device level
+  message Metadata {
+    enum Function {
+      FUNCTION_UNSPECIFIED = 0;
+      FUNCTION_FUNCTIONAL = 1;
+      FUNCTION_DECORATIVE = 2;
+      FUNCTION_MIXED = 3;
+      FUNCTION_UNKNOWN = 4;
+    }
+    string name = 1;
+    .hue.v1.LightArchetype archetype = 2;
+    Function function = 3;
+    optional int32 fixed_mired = 4;
+  }
+  // Triggers identification sequence on the light
+  message Identify {
+  }
+  message Dimming {
+    optional double brightness = 1;
+    optional double min_dim_level = 2;
+  }
+  message ColorTemperature {
+    message MirekSchema {
+      optional int32 mirek_minimum = 1;
+      optional int32 mirek_maximum = 2;
+    }
+    optional int32 mirek = 1;
+    optional bool mirek_valid = 2;
+    optional MirekSchema mirek_schema = 3;
+  }
+  message Color {
+    enum GamutType {
+      GAMUT_TYPE_UNSPECIFIED = 0;
+      GAMUT_TYPE_A = 1;
+      GAMUT_TYPE_B = 2;
+      GAMUT_TYPE_C = 3;
+      GAMUT_TYPE_OTHER = 4;
+    }
+    // Color gamut of color bulb. Some bulbs do not properly return the Gamut information. In this case this is not present.
+    message Gamut {
+      optional .hue.v1.GamutPosition red = 1;
+      optional .hue.v1.GamutPosition green = 2;
+      optional .hue.v1.GamutPosition blue = 3;
+    }
+    optional .hue.v1.GamutPosition xy = 1;
+    optional Gamut gamut = 2;
+    optional GamutType gamut_type = 3;
+  }
+  message Dynamics {
+    optional .hue.v1.SupportedDynamicStatus status = 1;
+    repeated .hue.v1.SupportedDynamicStatus status_values = 2;
+    optional double speed = 3;
+    optional bool speed_valid = 4;
+  }
+  // Joined alert control
+  message Alert {
+    repeated string action_values = 1;
+  }
+  // Feature containing signaling properties.
+  message Signaling {
+    repeated .hue.v1.SupportedSignals signal_values = 1;
+    optional int32 estimated_end = 2;
+    repeated .hue.v1.Color colors = 3;
+  }
+  // Basic feature containing gradient properties.
+  message Gradient {
+    repeated .hue.v1.Color points = 1;
+    optional .hue.v1.SupportedGradientMode mode = 2;
+    optional int32 points_capable = 3;
+    repeated .hue.v1.SupportedGradientMode mode_values = 4;
+    optional int32 pixel_count = 5;
+  }
+  // Basic feature containing effect properties.
+  message Effects {
+    optional .hue.v1.SupportedEffects status = 1;
+    repeated .hue.v1.SupportedEffects status_values = 2;
+    optional .hue.v1.SupportedEffects effect = 3;
+    repeated .hue.v1.SupportedEffects effect_values = 4;
+  }
+  // Basic feature containing timed effect properties.
+  message TimedEffects {
+    optional .hue.v1.SupportedTimedEffects effect = 1;
+    repeated .hue.v1.SupportedTimedEffects effect_values = 2;
+    optional .hue.v1.SupportedTimedEffects status = 3;
+    repeated .hue.v1.SupportedTimedEffects status_values = 4;
+    optional int32 duration = 5;
+  }
+  // Feature containing properties to configure powerup behaviour of a lightsource.
+  message Powerup {
+    enum Preset {
+      PRESET_UNSPECIFIED = 0;
+      PRESET_SAFETY = 1;
+      PRESET_POWERFAIL = 2;
+      PRESET_LAST_ON_STATE = 3;
+      PRESET_CUSTOM = 4;
+    }
+    message On {
+      enum Mode {
+        MODE_UNSPECIFIED = 0;
+        MODE_ON = 1;
+        MODE_TOGGLE = 2;
+        MODE_PREVIOUS = 3;
+      }
+      optional Mode mode = 1;
+      optional .hue.v1.On on = 2;
+    }
+    message Dimming {
+      enum Mode {
+        MODE_UNSPECIFIED = 0;
+        MODE_DIMMING = 1;
+        MODE_PREVIOUS = 2;
+      }
+      message Color {
+        enum Mode {
+          MODE_UNSPECIFIED = 0;
+          MODE_COLOR_TEMPERATURE = 1;
+          MODE_COLOR = 2;
+          MODE_PREVIOUS = 3;
+        }
+        message ColorTemperature {
+          optional int32 mirek = 1;
+          optional .hue.v1.Color color = 2;
+        }
+        optional Mode mode = 1;
+        optional ColorTemperature color_temperature = 2;
+      }
+      optional Mode mode = 1;
+      optional .hue.v1.Dimming dimming = 2;
+      optional Color color = 3;
+    }
+    optional Preset preset = 1;
+    optional bool configured = 2;
+    optional On on = 3;
+    optional Dimming dimming = 4;
+  }
+  // Product data about the light.
+  message ProductData {
+    enum Function {
+      FUNCTION_UNSPECIFIED = 0;
+      FUNCTION_FUNCTIONAL = 1;
+      FUNCTION_DECORATIVE = 2;
+      FUNCTION_MIXED = 3;
+      FUNCTION_UNKNOWN = 4;
+    }
+    optional Function function = 1;
+  }
+  // Geometry information for pixel-addressable lights such as gradient strips.
+  message Geometry {
+    message PixelPositions {
+      optional double x = 1;
+      optional double y = 2;
+      optional double z = 3;
+    }
+    repeated PixelPositions pixel_positions = 1;
+  }
+  string type = 1;
+  string id = 2;
+  optional string id_v1 = 3;
+  .hue.v1.ResourceIdentifier owner = 4;
+  Metadata metadata = 5;
+  Identify identify = 6;
+  int32 service_id = 7;
+  .hue.v1.On on = 8;
+  optional Dimming dimming = 9;
+  optional ColorTemperature color_temperature = 10;
+  optional Color color = 11;
+  optional Dynamics dynamics = 12;
+  optional Alert alert = 13;
+  optional Signaling signaling = 14;
+  Mode mode = 15;
+  optional Gradient gradient = 16;
+  optional Effects effects = 17;
+  optional .hue.v1.EffectsV2 effects_v2 = 18;
+  optional TimedEffects timed_effects = 19;
+  optional Powerup powerup = 20;
+  optional ProductData product_data = 21;
+  optional Geometry geometry = 22;
+}
+
+message LightPut {
+  enum Mode {
+    MODE_UNSPECIFIED = 0;
+    MODE_NORMAL = 1;
+    MODE_STREAMING = 2;
+  }
+  // Basic feature containing timed effect properties.
+  message TimedEffects {
+    optional .hue.v1.SupportedTimedEffects effect = 1;
+    optional int32 duration = 2;
+  }
+  optional string type = 1;
+  optional .hue.v1.On on = 2;
+  optional .hue.v1.Dimming dimming = 3;
+  optional .hue.v1.DimmingDelta dimming_delta = 4;
+  optional .hue.v1.ColorTemperatureDelta color_temperature_delta = 6;
+  optional .hue.v1.LightDynamics dynamics = 8;
+  optional .hue.v1.Alert alert = 9;
+  optional .hue.v1.Signaling signaling = 10;
+  optional Mode mode = 11;
+  optional .hue.v1.Gradient gradient = 12;
+  optional .hue.v1.Effects effects = 13;
+  optional .hue.v1.EffectsV2 effects_v2 = 14;
+  optional TimedEffects timed_effects = 15;
+  optional .hue.v1.Powerup powerup = 16;
+  oneof colour {
+    .hue.v1.Color color = 7;
+    .hue.v1.ColorTemperature color_temperature = 5;
+  }
+}

@@ -42,6 +42,12 @@ _SCALARS: dict[tuple[str, str | None], str] = {
     ("number", "float"): "float",
 }
 
+# Well-known types, and the import each one needs.
+TIMESTAMP = ".google.protobuf.Timestamp"
+_WELL_KNOWN: dict[tuple[str, str | None], tuple[str, str]] = {
+    ("string", "date-time"): (TIMESTAMP, "google/protobuf/timestamp.proto"),
+}
+
 Kind = Literal["enum", "message", "scalar"]
 
 
@@ -108,11 +114,21 @@ def _build_enum(name: str, values: list[Any]) -> Enum:
 
 class _Converter:
     def __init__(
-        self, spec: dict[str, Any], package: str, numbers: FieldNumbers
+        self,
+        spec: dict[str, Any],
+        package: str,
+        numbers: FieldNumbers,
+        owner_of: dict[str, str] | None = None,
+        current_file: str | None = None,
     ) -> None:
         self._spec = spec
         self._package = package
         self._numbers = numbers
+        # Which file owns each component schema, so a reference to one owned
+        # elsewhere becomes an import rather than a duplicate definition.
+        self._owner_of = owner_of or {}
+        self._current_file = current_file
+        self.imports: set[str] = set()
         self._messages: dict[str, Message] = {}
         self._enums: dict[str, Enum] = {}
         self._pending: list[str] = []
@@ -221,6 +237,14 @@ class _Converter:
             message = self._message(nested_name, schema, scope=f"{scope}.{nested_name}")
             nested.append(message)
             return message.name
+        return self._scalar(name, schema)
+
+    def _scalar(self, name: str, schema: dict[str, Any]) -> str:
+        well_known = _WELL_KNOWN.get((str(schema.get("type")), schema.get("format")))
+        if well_known is not None:
+            type_name, import_path = well_known
+            self.imports.add(import_path)
+            return type_name
         return _scalar_type(name, schema)
 
     def _reference_type(self, name: str, ref: str) -> str:
@@ -234,12 +258,17 @@ class _Converter:
         if kind == "scalar":
             # e.g. Brightness is a bare number; a fieldless message would
             # silently drop the value.
-            return _scalar_type(name, schema)
+            return self._scalar(name, schema)
 
-        self._pending.append(target)
+        proto_name = pascal_case(target)
+        owner = self._owner_of.get(proto_name)
+        if owner is not None and owner != self._current_file:
+            self.imports.add(owner)
+        else:
+            self._pending.append(target)
         # Fully qualified: a nested message of the same name would otherwise
         # capture this reference.
-        return f".{self._package}.{pascal_case(target)}"
+        return f".{self._package}.{proto_name}"
 
 
 def convert_document(

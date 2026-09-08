@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from protogen.convert import convert_document
+from protogen.layout import generate_files, load_manifest
 from protogen.numbering import FieldNumbers
 from protogen.spec import load_spec
 
@@ -23,8 +24,13 @@ docs/adr/0001-custom-openapi-to-proto-generator.md."""
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="protogen")
-    parser.add_argument("--spec", type=Path, required=True, help="OpenAPI document")
-    parser.add_argument("--out", type=Path, required=True, help="output .proto path")
+    parser.add_argument(
+        "--manifest",
+        type=Path,
+        help="generate every file described by this manifest (see proto/manifest.toml)",
+    )
+    parser.add_argument("--spec", type=Path, help="OpenAPI document")
+    parser.add_argument("--out", type=Path, help="output .proto path")
     parser.add_argument("--package", default="hue.v1", help="protobuf package")
     parser.add_argument(
         "--numbers",
@@ -38,7 +44,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--root",
         dest="roots",
         action="append",
-        required=True,
         metavar="SCHEMA",
         help="schema to emit; may be repeated. Referenced schemas follow.",
     )
@@ -46,7 +51,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    if args.manifest:
+        return _generate_from_manifest(args.manifest)
+
+    if not (args.spec and args.out and args.roots):
+        parser.error("--spec, --out and --root are required without --manifest")
 
     numbers = FieldNumbers.load(args.numbers) if args.numbers else FieldNumbers()
 
@@ -64,6 +76,31 @@ def main(argv: Sequence[str] | None = None) -> int:
         numbers.save(args.numbers)
 
     print(f"wrote {args.out}", file=sys.stderr)
+    return 0
+
+
+def _generate_from_manifest(path: Path) -> int:
+    manifest = load_manifest(path)
+    root = path.parent.parent
+    numbers_path = root / manifest.numbers
+
+    numbers = FieldNumbers.load(numbers_path)
+    generated = generate_files(
+        load_spec(root / manifest.spec),
+        manifest.files,
+        package=manifest.package,
+        default_file=manifest.default_file,
+        numbers=numbers,
+        header=GENERATED_HEADER,
+    )
+
+    for relative, proto in sorted(generated.items()):
+        out = root / manifest.out_dir / relative
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(proto.render(), encoding="utf-8")
+        print(f"wrote {out}", file=sys.stderr)
+
+    numbers.save(numbers_path)
     return 0
 
 
