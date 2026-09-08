@@ -34,6 +34,17 @@ run. Point it at one by hand:
 HUE_BRIDGE_ADDRESS=192.168.86.223 HUE_BRIDGE_ID=ECB5FAFFFE334703 pytest tests/smoke
 ```
 
+Pairing mints a real Application Key, so it is gated behind a second variable.
+Press the bridge's link button, then run within thirty seconds:
+
+```sh
+HUE_BRIDGE_ADDRESS=... HUE_BRIDGE_ID=... HUE_PRESS_LINK_BUTTON=1 \
+    pytest tests/smoke -k mints
+```
+
+That leaves an entry named `hue-grpc#smoke-test` on the bridge; nothing stores
+the secrets yet, so remove it from the Hue app afterwards.
+
 ## Status
 
 Scaffolding only. The gateway itself is tracked in the [open
