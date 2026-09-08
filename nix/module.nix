@@ -33,9 +33,7 @@ let
     cfg.bridge.address != null && cfg.bridge.id != null && cfg.bridge.credentialsFile != null;
 
   hasTls =
-    cfg.grpc.tls.enable
-    && cfg.grpc.tls.certificateFile != null
-    && cfg.grpc.tls.privateKeyFile != null;
+    cfg.grpc.tls.enable && cfg.grpc.tls.certificateFile != null && cfg.grpc.tls.privateKeyFile != null;
 
   hasToken = cfg.grpc.tokenFile != null;
 
@@ -63,17 +61,16 @@ let
     "%d/gateway-token"
   ];
 
-  serverArgs =
-    [
-      "--listen-address"
-      cfg.listenAddress
-      "--port"
-      (toString cfg.port)
-    ]
-    ++ lib.optionals hasBridge bridgeArgs
-    ++ lib.optionals hasTls tlsArgs
-    ++ lib.optionals hasToken tokenArgs
-    ++ cfg.extraArgs;
+  serverArgs = [
+    "--listen-address"
+    cfg.listenAddress
+    "--port"
+    (toString cfg.port)
+  ]
+  ++ lib.optionals hasBridge bridgeArgs
+  ++ lib.optionals hasTls tlsArgs
+  ++ lib.optionals hasToken tokenArgs
+  ++ cfg.extraArgs;
 
   loadCredential =
     lib.optional hasBridge "credentials:${cfg.bridge.credentialsFile}"
