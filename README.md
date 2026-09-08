@@ -45,6 +45,17 @@ HUE_BRIDGE_ADDRESS=... HUE_BRIDGE_ID=... HUE_PRESS_LINK_BUTTON=1 \
 That leaves an entry named `hue-grpc#smoke-test` on the bridge; nothing stores
 the secrets yet, so remove it from the Hue app afterwards.
 
+## State
+
+The Gateway's Registry Entry for its bridge — Bridge ID, address, model,
+firmware, last successful contact, and the secrets Pairing minted — is a
+single JSON file at
+`$STATE_DIRECTORY/registry.json`, mode 0600, written atomically. Outside
+systemd it falls back to `$XDG_STATE_HOME/hue-grpc/registry.json`. It sits
+outside the Nix store so a system rollback cannot discard it, and it is not
+encrypted at rest; see
+[ADR 0004](./docs/adr/0004-registry-on-disk-format.md) for why.
+
 ## Status
 
 Scaffolding only. The gateway itself is tracked in the [open
