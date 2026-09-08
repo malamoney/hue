@@ -273,7 +273,11 @@
                 want "$service" 'ProtectKernelModules=true'
                 want "$service" 'ProtectControlGroups=true'
                 want "$service" 'Restart=on-failure'
-                want "$service" 'RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX'
+                # systemd unions repeated RestrictAddressFamilies= lines, and
+                # NixOS renders the list one family per line.
+                want "$service" 'RestrictAddressFamilies=AF_INET'
+                want "$service" 'RestrictAddressFamilies=AF_INET6'
+                want "$service" 'RestrictAddressFamilies=AF_UNIX'
               done
 
               # Configured: the secret arrives as a credential, is referenced by
