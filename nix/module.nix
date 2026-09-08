@@ -50,11 +50,13 @@ let
     cfg.bridge.id
     "--credentials-file"
     "%d/credentials"
-  ]
-  # A CA cert is not a secret, so it is a plain ExecStart argument rather than
-  # a credential. It swaps the trust anchor for the Bridge connection; the
-  # common-name check the server makes on top of it is unaffected.
-  ++ lib.optionals (cfg.bridge.caFile != null) [
+  ];
+
+  # A CA cert is not a secret, so it is a plain ExecStart argument. It swaps
+  # the trust anchor for the Bridge connection; the common-name check the
+  # Gateway makes on top of it is unaffected. Rendered whether the Bridge is
+  # given statically or read from a paired `registry.json`.
+  caArgs = lib.optionals (cfg.bridge.caFile != null) [
     "--bridge-ca-file"
     cfg.bridge.caFile
   ];
@@ -78,6 +80,7 @@ let
     (toString cfg.port)
   ]
   ++ lib.optionals hasBridge bridgeArgs
+  ++ caArgs
   ++ lib.optionals hasTls tlsArgs
   ++ lib.optionals hasToken tokenArgs
   ++ cfg.extraArgs;
@@ -168,9 +171,9 @@ in
       example = "/etc/hue-grpc/bridge-ca.pem";
       description = ''
         PEM CA the Bridge's certificate is verified against, instead of the
-        Philips {file}`root-bridge` CA the package ships with. The server's
+        Philips {file}`root-bridge` CA the package ships with. The Gateway's
         common-name check still runs on top; this only replaces the trust
-        anchor, for a Bridge behind a certificate this Gateway was not
+        anchor, for a Bridge behind a certificate the Gateway was not
         shipped knowing about. Not a secret, and rendered straight into
         {env}`ExecStart`.
       '';
@@ -266,10 +269,6 @@ in
       {
         assertion = (cfg.bridge.address != null) == (cfg.bridge.credentialsFile != null);
         message = "services.hue-grpc: bridge.address needs bridge.credentialsFile, and the reverse.";
-      }
-      {
-        assertion = cfg.bridge.caFile != null -> cfg.bridge.address != null;
-        message = "services.hue-grpc: bridge.caFile only applies with a configured bridge.";
       }
     ];
 

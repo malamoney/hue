@@ -5,11 +5,10 @@ from __future__ import annotations
 import ssl
 from pathlib import Path
 
+from conftest import BRIDGE_ID
 from cryptography import x509
 from cryptography.x509.oid import ExtensionOID, NameOID
 from fake_hue.certs import CA_COMMON_NAME, mint_bridge_certs
-
-BRIDGE_ID = "ECB5FAFFFE334703"
 
 
 def _common_name(name: x509.Name) -> str:

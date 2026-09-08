@@ -8,16 +8,21 @@ both always present.
 
 What it is *not* is a simulator of a real Bridge's behaviour beyond that. It
 keeps light state in memory, applies only the command fields the Gateway
-sends (``on`` and ``dimming``), and emits one event per accepted change. The
-one deliberately unrealistic thing it can do is on purpose: ``disconnect_streams``
-drops every open event-stream connection, which is how a test reproduces a
-Bridge that fell off the network without unplugging anything.
+sends (``on`` and ``dimming``), and emits one event per accepted change. It
+also serves the v1 ``POST /api`` pairing exchange — always minting, never
+waiting on a link button — so a test can register a Bridge the way a real
+deployment that is not statically configured does.
+
+``disconnect_streams`` drops every open event-stream connection, which is how
+a test reproduces a Bridge that fell off the network without unplugging
+anything.
 """
 
 from __future__ import annotations
 
 import json
 import queue
+import secrets
 import socketserver
 import ssl
 import threading
@@ -33,15 +38,19 @@ from fake_hue.certs import BridgeCerts
 __all__ = [
     "APPLICATION_KEY_HEADER",
     "DEFAULT_LIGHTS",
+    "PAIRING_PATH",
     "FakeHueBridge",
     "LightStore",
 ]
 
 APPLICATION_KEY_HEADER = "hue-application-key"
 
+#: The v1 endpoint pairing has always lived on. Unauthenticated: pairing is
+#: what mints the key, so it cannot require one.
+PAIRING_PATH = "/api"
+
 _LIGHT_COLLECTION = "/clip/v2/resource/light"
 _EVENT_STREAM = "/eventstream/clip/v2"
-_CONTROL_DISCONNECT = "/__control__/disconnect-streams"
 
 #: A queue entry that tells a streaming handler to close rather than deliver.
 _CLOSE = object()
@@ -205,11 +214,25 @@ class _Handler(BaseHTTPRequestHandler):
             self._not_found()
 
     def do_POST(self) -> None:
-        if self.path == _CONTROL_DISCONNECT:
-            self._bridge.lights.disconnect_all()
-            self._json(b'{"disconnected": true}')
+        if self.path == PAIRING_PATH:
+            self._pair()
         else:
             self._not_found()
+
+    def _pair(self) -> None:
+        """The v1 pairing exchange: mint both keys and hand them back.
+
+        Unauthenticated, and the link button is always "pressed" — the
+        unpressed-button path (Hue error type 101) is a unit-test concern in
+        the Gateway, not something a booted VM needs to pass through.
+        """
+        self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        application_key, client_key = self._bridge.mint_pairing()
+        self._json(
+            json.dumps(
+                [{"success": {"username": application_key, "clientkey": client_key}}]
+            ).encode()
+        )
 
     def _get_one(self, light_id: str) -> None:
         if not self._require_key():
@@ -288,7 +311,7 @@ class _Handler(BaseHTTPRequestHandler):
         the journal grep, that it is not being logged.
         """
         presented = self.headers.get(APPLICATION_KEY_HEADER)
-        if presented == self._bridge.application_key:
+        if presented and self._bridge.accepts_key(presented):
             return True
         self._json(
             _envelope([], [{"description": "unauthorized user"}]),
@@ -323,7 +346,13 @@ class FakeHueBridge:
         lights: Mapping[str, Mapping[str, Any]] | None = None,
         log: bool = False,
     ) -> None:
+        #: The key handed over out of band — the static-config path, where the
+        #: Gateway is given its key rather than pairing for one.
         self.application_key = application_key
+        #: Keys this fake has minted through pairing, kept so the CLIP calls
+        #: that follow are accepted. Not durable: a restart forgets them, the
+        #: same way a real Bridge would not.
+        self._minted: set[str] = set()
         self.lights = LightStore(lights)
         self.log = log
         self.stopping = threading.Event()
@@ -339,9 +368,15 @@ class FakeHueBridge:
         host, port = _host_port(self._server.server_address)
         return f"{host}:{port}"
 
-    @property
-    def port(self) -> int:
-        return _host_port(self._server.server_address)[1]
+    def accepts_key(self, key: str) -> bool:
+        return key == self.application_key or key in self._minted
+
+    def mint_pairing(self) -> tuple[str, str]:
+        """A fresh Application Key and Client Key, both now accepted."""
+        application_key = secrets.token_urlsafe(24)
+        client_key = secrets.token_hex(16).upper()
+        self._minted.add(application_key)
+        return application_key, client_key
 
     def disconnect_streams(self) -> None:
         self.lights.disconnect_all()

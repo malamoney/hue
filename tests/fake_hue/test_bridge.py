@@ -126,5 +126,25 @@ def test_disconnect_streams_ends_every_open_stream(
     assert not any(line.startswith("data:") for line in lines)
 
 
-def test_control_disconnect_is_also_reachable_over_http(client: httpx.Client) -> None:
-    assert client.post("/__control__/disconnect-streams").status_code == 200
+def test_pairing_mints_keys_that_the_clip_endpoints_then_accept(
+    client: httpx.Client,
+) -> None:
+    paired = client.post(
+        "/api",
+        json={"devicetype": "hue-grpc#test", "generateclientkey": True},
+        headers={APPLICATION_KEY_HEADER: ""},
+    )
+
+    assert paired.status_code == 200
+    success = paired.json()[0]["success"]
+    assert success["username"] and success["clientkey"]
+
+    # The minted key works where the configured one would, and a stale key
+    # still does not.
+    with_minted = client.get(
+        _LIGHTS, headers={APPLICATION_KEY_HEADER: success["username"]}
+    )
+    assert with_minted.status_code == 200
+    assert (
+        client.get(_LIGHTS, headers={APPLICATION_KEY_HEADER: "nope"}).status_code == 403
+    )

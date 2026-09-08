@@ -104,8 +104,9 @@
               '';
 
           # The fake Hue Bridge (issue #14), which the NixOS integration test
-          # runs on its own node. Its own check because its dependency set —
-          # cryptography, httpx — is not the gateway's, exactly like protogen.
+          # runs on its own node. Its own check, like protogen's, because it
+          # is build tooling: mypy runs against its own config (tools/), and
+          # its `conftest` cannot share a mypy run with tests/unit's.
           fake-hue =
             pkgs.runCommand "hue-grpc-fake-hue"
               {
@@ -275,12 +276,17 @@
                   caFile = "/etc/hue-grpc/bridge-ca.pem";
                 };
               };
+              # A paired gateway: no static bridge, but a CA to verify it
+              # against once `registry.json` names it.
+              caOnly = unitOf { bridge.caFile = "/etc/hue-grpc/bridge-ca.pem"; };
               bare = unitOf { };
             in
             pkgs.runCommand "hue-grpc-nixos-module" { } ''
               configured="${configured}/hue-grpc.service"
+              caOnly="${caOnly}/hue-grpc.service"
               bare="${bare}/hue-grpc.service"
               echo "=== configured ==="; cat "$configured"
+              echo "=== caOnly ===";     cat "$caOnly"
               echo "=== bare ===";       cat "$bare"
 
               want() {
@@ -293,7 +299,7 @@
                 fi
               }
 
-              for service in "$configured" "$bare"; do
+              for service in "$configured" "$caOnly" "$bare"; do
                 want "$service" 'DynamicUser=true'
                 want "$service" 'StateDirectory=hue-grpc'
                 want "$service" 'StateDirectoryMode=0700'
@@ -323,6 +329,12 @@
               # path is rendered as given rather than through a credential.
               want "$configured" '--bridge-ca-file /etc/hue-grpc/bridge-ca.pem'
               deny "$configured" 'LoadCredential=bridge-ca'
+
+              # caOnly: the CA argument stands on its own — no static bridge,
+              # nothing loaded — for a gateway that pairs and reads a registry.
+              want "$caOnly" '--bridge-ca-file /etc/hue-grpc/bridge-ca.pem'
+              deny "$caOnly" '--bridge-address'
+              deny "$caOnly" 'LoadCredential='
 
               # Bare enable: a running listener, no bridge, nothing to load.
               deny "$bare" '--bridge-address'
