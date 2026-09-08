@@ -150,22 +150,22 @@ pkgs.testers.runNixOSTest {
     GRPCURL = "grpcurl -plaintext -d '{}' 127.0.0.1:50051 "
 
 
-    def joined_count(node: Machine) -> int:
+    def subscriber_count(node):
         out = node.succeed(
             "journalctl -u hue-grpc.service | grep -c 'subscriber joined' || true"
         )
         return int(out.strip())
 
 
-    def wait_for_new_subscriber(node: Machine, before: int) -> None:
+    def wait_for_subscriber(node, more_than):
         node.wait_until_succeeds(
             "test $(journalctl -u hue-grpc.service "
-            f"| grep -c 'subscriber joined') -gt {before}",
+            f"| grep -c 'subscriber joined') -gt {more_than}",
             timeout=30,
         )
 
 
-    def update_light(node: Machine, light: str, group: str, value: str) -> str:
+    def update_light(node, light, group, value):
         body = f'{{"lightId":"{light}","command":{{"{group}":{value}}}}}'
         return node.succeed(
             f"grpcurl -plaintext -d '{body}' 127.0.0.1:50051 "
@@ -211,12 +211,12 @@ pkgs.testers.runNixOSTest {
 
     # Step 7c: one event stream. Attach a subscriber, wait for the gateway to
     # confirm it joined, then change a light and see the change arrive.
-    before = joined_count(gateway)
+    before = subscriber_count(gateway)
     gateway.succeed(
         "timeout 40 " + GRPCURL + "hue.v1.EventService/Subscribe "
         "> /tmp/events.json 2>/tmp/events.err & echo started"
     )
-    wait_for_new_subscriber(gateway, before)
+    wait_for_subscriber(gateway, before)
     update_light(gateway, light_id, "dimming", '{"brightness":77}')
     gateway.wait_until_succeeds("grep -q '\"change\"' /tmp/events.json", timeout=20)
 
@@ -247,12 +247,12 @@ pkgs.testers.runNixOSTest {
     # Step 9: the bridge drops off the network. The gRPC stream does not end;
     # the gateway reconnects and announces a Gap with CAUSE_RECONNECTED, then
     # keeps serving.
-    before = joined_count(gateway)
+    before = subscriber_count(gateway)
     gateway.succeed(
         "timeout 120 " + GRPCURL + "hue.v1.EventService/Subscribe "
         "> /tmp/gap.json 2>/tmp/gap.err & echo started"
     )
-    wait_for_new_subscriber(gateway, before)
+    wait_for_subscriber(gateway, before)
     bridge.systemctl("stop fake-hue.service")
     gateway.sleep(5)
     bridge.systemctl("start fake-hue.service")
