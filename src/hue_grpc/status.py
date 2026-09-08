@@ -43,7 +43,16 @@ from hue_grpc.hue.transport import (
     BridgeUnreachableError,
 )
 
-__all__ = ["Status", "status_for"]
+__all__ = ["UNPAIRED", "Status", "status_for"]
+
+#: What a Gateway with no Registry Entry answers every service call with,
+#: under `FAILED_PRECONDITION`. Here rather than beside one servicer because
+#: every service has the same problem and the same fix, and a caller who tries
+#: the other one should not be told something subtly different.
+UNPAIRED = (
+    "no bridge is registered; run `hue-grpc-server pair` with the bridge's "
+    "address and press its link button"
+)
 
 
 @dataclass(frozen=True)

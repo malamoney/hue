@@ -77,6 +77,7 @@ buildPythonApplication {
     # The generated protobuf modules, which are only in the output if
     # codegen ran and setuptools found what it produced.
     "hue.v1.lighting_service_pb2_grpc"
+    "hue.v1.event_service_pb2_grpc"
   ];
 
   meta = {

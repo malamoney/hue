@@ -31,7 +31,10 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from hue_grpc import __version__
+from hue_grpc.events.fanout import DEFAULT_QUEUE_SIZE, EventFanout
+from hue_grpc.events.service import hosted_event_service
 from hue_grpc.hue import pairing
+from hue_grpc.hue.events import BridgeEvents
 from hue_grpc.hue.lights import Lights
 from hue_grpc.hue.transport import HueTransport, HueTransportError
 from hue_grpc.lighting.service import hosted_lighting_service
@@ -135,6 +138,14 @@ def build_parser() -> argparse.ArgumentParser:
         "are cancelled (default: %(default)s)",
     )
     parser.add_argument(
+        "--event-queue-size",
+        type=int,
+        default=DEFAULT_QUEUE_SIZE,
+        metavar="EVENTS",
+        help="how far behind one event subscriber may fall before it starts "
+        "losing events, and being told so (default: %(default)s)",
+    )
+    parser.add_argument(
         "--max-inbound-message-bytes",
         type=int,
         default=DEFAULT_MAX_INBOUND_MESSAGE_BYTES,
@@ -236,20 +247,25 @@ def config_from(args: argparse.Namespace) -> GatewayConfig:
     )
 
 
-async def _serve(config: GatewayConfig, entry: RegistryEntry | None) -> None:
-    """Listen, serving lights from `entry`'s Bridge if there is one.
+async def _serve(
+    config: GatewayConfig,
+    entry: RegistryEntry | None,
+    *,
+    event_queue_size: int = DEFAULT_QUEUE_SIZE,
+) -> None:
+    """Listen, serving `entry`'s Bridge if there is one.
 
-    An unpaired Gateway still listens and still hosts the lighting service:
-    health, reflection and a clear FAILED_PRECONDITION are more use than a
-    unit that refuses to start, and the fix — walking to the Bridge — is not
-    one anybody can perform from a failed boot.
+    An unpaired Gateway still listens and still hosts both services: health,
+    reflection and a clear FAILED_PRECONDITION are more use than a unit that
+    refuses to start, and the fix — walking to the Bridge — is not one
+    anybody can perform from a failed boot.
     """
     if entry is None:
         _log.warning(
-            "no bridge is registered; lighting calls will be refused until "
-            "`hue-grpc-server pair` has run"
+            "no bridge is registered; lighting and event calls will be "
+            "refused until `hue-grpc-server pair` has run"
         )
-        await serve(config, [hosted_lighting_service(None)])
+        await serve(config, [hosted_lighting_service(None), hosted_event_service(None)])
         return
     transport = HueTransport(
         bridge_id=entry.bridge_id,
@@ -257,7 +273,23 @@ async def _serve(config: GatewayConfig, entry: RegistryEntry | None) -> None:
         application_key=entry.application_key,
     )
     async with transport:
-        await serve(config, [hosted_lighting_service(Lights(transport))])
+        # One transport for both services: a Bridge is one host, one
+        # connection pool and one Application Key, whichever of its paths is
+        # being asked for. The event stream holds a connection of its own out
+        # of that pool for as long as the gateway is up.
+        lights = Lights(transport)
+        fanout = EventFanout(
+            events=BridgeEvents(transport),
+            lights=lights,
+            queue_size=event_queue_size,
+        )
+        await serve(
+            config,
+            [
+                hosted_lighting_service(lights),
+                hosted_event_service(fanout, bridge_id=entry.bridge_id),
+            ],
+        )
 
 
 async def _mint(
@@ -342,7 +374,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         _log.error("gateway could not start: %s", unreadable)
         return 1
     try:
-        asyncio.run(_serve(config, entry))
+        asyncio.run(_serve(config, entry, event_queue_size=args.event_queue_size))
     except OSError as unavailable:
         _log.error("gateway could not start: %s", unavailable)
         return 1

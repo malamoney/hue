@@ -1,0 +1,143 @@
+// Hand-written, like `lighting_service.proto` and for the same reason:
+// OpenAPI describes the `/eventstream/clip/v2` payload and has no notion of a
+// service, so the RPC and what it streams are ours to state. `Event` — the
+// Bridge's own envelope — is generated next door in `events.proto`, and its
+// `Type` is reused here rather than restated.
+//
+// The Bridge's envelope is not what a client wants, which is why this is not
+// simply `stream Event`. One Bridge event carries several Resources, each
+// with its properties inline and its type as a string; a client wants one
+// message per Resource, typed where the Gateway models the type, and it wants
+// to be told when the Gateway stopped being able to see the Bridge.
+//
+// Field numbers here are assigned by hand and, like the generated ones in
+// `proto/field-numbers.json`, are never reused. See
+// docs/adr/0003-committed-field-number-lock.md.
+
+syntax = "proto3";
+
+package hue.v1;
+
+import "google/protobuf/timestamp.proto";
+import "hue/v1/common.proto";
+import "hue/v1/events.proto";
+import "hue/v1/lighting.proto";
+
+// What is happening on the Bridge this Gateway is paired with.
+//
+// No request carries a Bridge ID, for the reason `LightingService` gives:
+// one Gateway serves one Bridge. `HueEvent` carries one anyway, because an
+// event that has been fanned out, queued and delivered has travelled far
+// enough from its Bridge to be worth naming.
+service EventService {
+  // Every change the Bridge reports, for as long as the client listens.
+  //
+  // The stream ends when the client cancels it or the Gateway shuts down. It
+  // does not end because the Bridge went away: that is a Gap, which is a
+  // message on the stream rather than the end of it.
+  rpc Subscribe(SubscribeRequest) returns (stream HueEvent);
+}
+
+message SubscribeRequest {
+  // Only events about these Resources. Empty — the default — is every one.
+  repeated string resource_ids = 1;
+
+  // Only events about Resources of these types. Empty is every type.
+  //
+  // Filtering is the Gateway's, not the Bridge's: one upstream connection
+  // serves every subscriber, so a narrow filter saves a client from reading
+  // what it does not want rather than saving the Bridge from sending it.
+  repeated ResourceIdentifier.Rtype resource_types = 2;
+
+  // Three filters the project plan lists are deliberately not here. A Bridge
+  // ID for the reason the service comment gives. An event type — add against
+  // update against delete — because a client that wants only deletions still
+  // has to read the updates to know what was deleted from, so the filter
+  // would save nothing worth the field. A flag for raw upstream payloads
+  // because every event already carries its Resource's id and type, and a
+  // second, untyped copy of what the Bridge said is a compatibility escape
+  // hatch rather than part of this service.
+  //
+  // Each of them is a field to add, not a shape to change, if the need turns
+  // out to be real. Field numbers here are never reused, so 3 onwards are
+  // free and 1 and 2 mean what they mean.
+}
+
+// One thing the Gateway has to tell a subscriber: something changed, or
+// something may have been missed.
+message HueEvent {
+  // The Bridge the event came from, as the Registry records it.
+  string bridge_id = 1;
+
+  // When the Gateway learned of this — not when the Bridge did, which is
+  // `ResourceChange.bridge_time`. The two differ by the trip and by however
+  // long the Gateway was disconnected.
+  google.protobuf.Timestamp gateway_time = 2;
+
+  oneof happened {
+    ResourceChange change = 3;
+    Gap gap = 4;
+  }
+}
+
+// A Resource the Bridge says changed.
+message ResourceChange {
+  // The Bridge's id for the event this arrived in. Several changes share one
+  // when the Bridge batches them, which it does constantly.
+  //
+  // Empty for a change the Gateway synthesised during a Resync: the Bridge
+  // never sent it, so there is no id of the Bridge's to quote.
+  string event_id = 1;
+
+  Event.Type type = 2;
+
+  // Which Resource, and of what type. `RTYPE_UNSPECIFIED` with a `rid` set
+  // is a Resource type newer than this Gateway — the id is still the id.
+  ResourceIdentifier resource = 3;
+
+  // The Bridge's own timestamp for the event. Unset on a synthesised change,
+  // where the Gateway knows the state is new to it and not when it changed.
+  optional google.protobuf.Timestamp bridge_time = 4;
+
+  // The changed properties, typed, for the Resource types the Gateway
+  // models. Unset for every other type: the Bridge streams events for
+  // Resources this Gateway does not model, and passing them on with their
+  // id and type is more use than dropping them.
+  //
+  // Only the properties that changed are present, exactly as the Bridge
+  // reports them. A `LightGet` here is a change, not a light.
+  oneof update {
+    LightGet light = 5;
+  }
+}
+
+// Events may have been missed, and the Gateway cannot say whether any were.
+//
+// See `CONTEXT.md`: the Bridge keeps no durable buffer and discards old
+// events without saying so, so a Gap can never be disproven. It is narrowed
+// instead — every Gap the Gateway announces on reconnect is followed by the
+// synthesised changes of a Resync, which say what is true *now* of every
+// Resource the Gateway models.
+message Gap {
+  enum Cause {
+    CAUSE_UNSPECIFIED = 0;
+
+    // The Gateway's connection to the Bridge dropped and was made again.
+    // Announced on every reconnect, unconditionally, whether or not anything
+    // happened while it was gone.
+    CAUSE_RECONNECTED = 1;
+
+    // This subscriber did not read fast enough and its queue filled. Only
+    // this subscriber is affected; a slow client never blocks the Bridge
+    // reader or its neighbours.
+    CAUSE_SUBSCRIBER_BEHIND = 2;
+  }
+
+  Cause cause = 1;
+
+  // How many events were dropped, when that is knowable. It is knowable for
+  // `CAUSE_SUBSCRIBER_BEHIND`, where the Gateway held them and let them go.
+  // It is not for `CAUSE_RECONNECTED`, where the number missed is exactly
+  // what the Bridge does not report, and this is 0 rather than a guess.
+  uint32 missed = 2;
+}

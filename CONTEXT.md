@@ -107,6 +107,10 @@ _Avoid_: request ID, trace ID, span ID
 An interval during which events may have been missed, where the Gateway cannot determine whether any were. The Bridge discards buffered events after several minutes without signalling that it has done so, so a Gap can never be disproven — only narrowed by Resync.
 _Avoid_: drop, loss, missed events
 
+**Subscriber**:
+One gRPC client's `Subscribe` call and the bounded queue the Gateway holds for it. Subscribers share one connection to the Bridge and are told about a Gap independently: one that falls behind loses events the others still receive.
+_Avoid_: listener (which is the address the Gateway serves on), consumer, watcher, client (unqualified)
+
 **Resync**:
-Re-reading full Resource state after an event stream reconnect and emitting synthetic update events for anything that changed. Converts a Gap into known state for the Resources the Gateway models.
+Re-reading full Resource state after an event stream reconnect and emitting a synthetic event — an add, an update or a delete — for whatever differs from what the Gateway believed. Converts a Gap into known state for the Resources the Gateway models.
 _Avoid_: refresh, backfill, catch-up

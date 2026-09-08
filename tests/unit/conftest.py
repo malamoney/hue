@@ -149,7 +149,9 @@ class FakeBridge:
 
     It records the bytes it receives, so a test can tell the difference between
     a request that was rejected during the handshake and one that reached the
-    Bridge before anything noticed.
+    Bridge before anything noticed. `respond` is handed those same bytes, so a
+    fake that has to answer two paths differently — the light collection and
+    the event stream — can tell which one it is answering.
     """
 
     def __init__(
@@ -159,7 +161,7 @@ class FakeBridge:
         body: str = "{}",
         status: str = "200 OK",
         content_type: str = "application/json",
-        respond: Callable[[asyncio.StreamWriter], Awaitable[None]] | None = None,
+        respond: Callable[[bytes, asyncio.StreamWriter], Awaitable[None]] | None = None,
     ) -> None:
         self._certs = certs
         self._body = body
@@ -206,7 +208,7 @@ class FakeBridge:
         self.requests.append(head + body)
 
         if self._respond is not None:
-            await self._respond(writer)
+            await self._respond(head + body, writer)
             return
 
         body = self._body.encode()

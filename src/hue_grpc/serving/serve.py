@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Coroutine, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -76,6 +76,11 @@ class HostedService:
 
     name: str
     register: Callable[[grpc.aio.Server], None]
+    #: Work this service needs done for as long as the gateway is up, rather
+    #: than only while a call is in flight — the event stream's one upstream
+    #: reader. Started once the listener is up and cancelled once it has
+    #: stopped, so a call still being answered is not pulled out from under.
+    run: Callable[[], Coroutine[Any, Any, None]] | None = None
 
 
 class RunningGateway:
@@ -184,6 +189,35 @@ def _bind(server: grpc.aio.Server, config: GatewayConfig) -> int:
     return int(port)
 
 
+def _start(services: Sequence[HostedService]) -> list[asyncio.Task[None]]:
+    """The background work of every service that has some, already running.
+
+    A task that ends by itself has failed — none of them are meant to finish
+    — and it says so at the time rather than at shutdown, where a gathered
+    exception would arrive long after whatever it broke.
+    """
+    tasks = []
+    for service in services:
+        if service.run is None:
+            continue
+        task = asyncio.create_task(service.run(), name=service.name)
+        task.add_done_callback(_report)
+        tasks.append(task)
+    return tasks
+
+
+def _report(task: asyncio.Task[None]) -> None:
+    if task.cancelled():
+        return
+    failure = task.exception()
+    if failure is not None:
+        _log.error(
+            "a service's background work stopped",
+            exc_info=failure,
+            **fields(service=task.get_name()),
+        )
+
+
 @asynccontextmanager
 async def running_gateway(
     config: GatewayConfig, services: Sequence[HostedService] = ()
@@ -226,6 +260,7 @@ async def running_gateway(
             services=[HEALTH_SERVICE, *(s.name for s in services)],
         ),
     )
+    background = _start(services)
     try:
         yield gateway
     finally:
@@ -233,6 +268,9 @@ async def running_gateway(
         if config.shutdown_drain:
             await asyncio.sleep(config.shutdown_drain)
         await server.stop(config.shutdown_grace)
+        for task in background:
+            task.cancel()
+        await asyncio.gather(*background, return_exceptions=True)
         _log.info("gateway stopped", **fields(port=port))
 
 
