@@ -92,7 +92,7 @@ async def serving(
         yield stub
 
 
-async def hangs_up_on_everything(writer: asyncio.StreamWriter) -> None:
+async def hangs_up_on_everything(request: bytes, writer: asyncio.StreamWriter) -> None:
     """A bridge that accepts the connection and drops it without answering."""
     writer.close()
 

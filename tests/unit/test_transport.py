@@ -157,7 +157,7 @@ def test_gives_up_on_a_bridge_that_accepts_but_never_answers(
 ) -> None:
     """The read timeout is what bounds a wedged Bridge, not the connect timeout."""
 
-    async def stall(writer: asyncio.StreamWriter) -> None:
+    async def stall(request: bytes, writer: asyncio.StreamWriter) -> None:
         await asyncio.sleep(2)
 
     async def scenario() -> None:
@@ -192,7 +192,7 @@ def test_streams_events_across_gaps_longer_than_the_request_timeout(
 ) -> None:
     """The Bridge is silent between events; that silence is not a timeout."""
 
-    async def dribble(writer: asyncio.StreamWriter) -> None:
+    async def dribble(request: bytes, writer: asyncio.StreamWriter) -> None:
         writer.write(
             b"HTTP/1.1 200 OK\r\n"
             b"Content-Type: text/event-stream\r\n"
@@ -342,7 +342,7 @@ def hangs_up_first(failures: int, body: str = '{"data": []}') -> Any:
     """
     served = 0
 
-    async def respond(writer: asyncio.StreamWriter) -> None:
+    async def respond(request: bytes, writer: asyncio.StreamWriter) -> None:
         nonlocal served
         served += 1
         if served <= failures:
@@ -454,7 +454,7 @@ def test_a_bridge_that_went_quiet_is_not_asked_again(
     """A read timeout has already spent the caller's patience once; spending
     it again on the same silent Bridge only delays the answer."""
 
-    async def stall(writer: asyncio.StreamWriter) -> None:
+    async def stall(request: bytes, writer: asyncio.StreamWriter) -> None:
         await asyncio.sleep(2)
 
     async def scenario() -> None:

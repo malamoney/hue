@@ -33,6 +33,7 @@ from hue.v1 import lighting_service_pb2
 from hue.v1 import lighting_service_pb2_grpc as lighting_grpc
 from hue_grpc import __version__, cli
 from hue_grpc.cli import build_parser, config_from, default_instance, main
+from hue_grpc.events.service import SERVICE_NAME as EVENT_SERVICE
 from hue_grpc.hue.pairing import (
     INSTANCE_NAME_LIMIT,
     LinkButtonNotPressedError,
@@ -361,7 +362,9 @@ def test_the_binary_serves_the_registered_bridge(state_home: Path) -> None:
         )
     try:
         listening = await_listening_line(log_file, gateway)
-        assert SERVICE_NAME in listening["services"]  # type: ignore[operator]
+        announced = listening["services"]
+        assert SERVICE_NAME in announced  # type: ignore[operator]
+        assert EVENT_SERVICE in announced  # type: ignore[operator]
 
         async def scenario() -> grpc.StatusCode:
             async with grpc.aio.insecure_channel(f"127.0.0.1:{port}") as channel:

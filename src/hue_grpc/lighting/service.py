@@ -30,7 +30,7 @@ from hue_grpc.hue.transport import HueTransportError
 from hue_grpc.lighting.limits import COMMAND_RANGES
 from hue_grpc.logs import fields
 from hue_grpc.serving.serve import HostedService
-from hue_grpc.status import status_for
+from hue_grpc.status import UNPAIRED, status_for
 
 __all__ = ["SERVICE_NAME", "LightingServicer", "hosted_lighting_service"]
 
@@ -39,11 +39,6 @@ __all__ = ["SERVICE_NAME", "LightingServicer", "hosted_lighting_service"]
 SERVICE_NAME: str = lighting_service_pb2.DESCRIPTOR.services_by_name[
     "LightingService"
 ].full_name
-
-_UNPAIRED = (
-    "no bridge is registered; run `hue-grpc-server pair` with the bridge's "
-    "address and press its link button"
-)
 
 _NOTHING_TO_CHANGE = (
     "the command asks for no change; set the fields to change, and leave the "
@@ -120,7 +115,7 @@ class LightingServicer(lighting_grpc.LightingServiceServicer):  # type: ignore[m
     async def _bridge(self, context: Any) -> AsyncIterator[Lights]:
         """The Bridge to serve this call from, or the status to answer with."""
         if self._lights is None:
-            await context.abort(grpc.StatusCode.FAILED_PRECONDITION, _UNPAIRED)
+            await context.abort(grpc.StatusCode.FAILED_PRECONDITION, UNPAIRED)
             raise AssertionError("abort does not return")
         try:
             yield self._lights

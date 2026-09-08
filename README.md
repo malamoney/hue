@@ -63,6 +63,14 @@ One of them writes to a real light, and is gated again: `HUE_CHANGE_LIGHTS=1`.
 It sets a light's brightness to the brightness it already has, so nothing
 should visibly happen.
 
+The event smoke tests need the same key and take about ten seconds, most of
+which is spent proving the bridge holds a silent stream open:
+
+```sh
+HUE_BRIDGE_ADDRESS=... HUE_BRIDGE_ID=... HUE_APPLICATION_KEY=... \
+    pytest tests/smoke -k events
+```
+
 ## Pairing
 
 The bridge mints an Application Key only for someone standing next to it.
@@ -132,6 +140,52 @@ from one that failed before, and the gateway does not get to guess. A bridge
 that answered — a 429, a 503 — is not asked again either; that is a decision
 for the client, who can see the whole round trip.
 
+## Events
+
+```sh
+grpcurl -plaintext -d '{}' 127.0.0.1:50051 hue.v1.EventService/Subscribe
+```
+
+That streams every change the bridge reports, for as long as the client
+listens, out of the one connection the gateway holds open to the bridge —
+however many clients are listening. `{"resource_ids": ["<id>"]}` and
+`{"resource_types": ["RTYPE_LIGHT"]}` narrow it; an empty request is
+everything.
+
+Each event carries the bridge id, the bridge's own timestamp, the gateway's
+receive time, the resource that moved and, for lights, the changed properties
+typed as a `LightGet`. Resources the gateway does not model still arrive, with
+their id and type and no typed update: knowing a grouped light changed is
+worth more than silence.
+
+The stream does not end when the bridge goes away. That is a `Gap`, which is a
+message on the stream:
+
+```json
+{"bridgeId": "...", "gap": {"cause": "CAUSE_RECONNECTED"}}
+```
+
+A gap says events may have been missed and the gateway cannot tell whether
+any were — the bridge purges its event buffer after several minutes without
+signalling that it has, so a gap can never be disproven. One is emitted on
+every reconnect, unconditionally, however brief the outage. What makes that
+survivable is what follows it: the gateway re-reads every light and emits a
+synthetic event for whatever differs — an add, an update or a delete — so a
+gap is followed by the truth about the resources it models. Those synthetic
+events carry no event id and no bridge timestamp, because the bridge never
+sent them. See [ADR 0005](./docs/adr/0005-announce-every-gap-and-resync.md).
+
+The stream itself reconnects on a schedule of its own: half a second,
+doubling to thirty, jittered, for as long as the bridge stays away. No
+client's deadline bounds it — a bridge unplugged overnight is still the
+bridge, and a subscriber is told what it missed when the bridge comes back.
+
+`CAUSE_SUBSCRIBER_BEHIND` is the other one, and it is about one client: each
+subscriber has a bounded queue — `--event-queue-size`, 256 by default — and a
+client that stops reading fills its own queue and nothing else. What it missed
+is counted and reported in the position the events would have been. A slow
+client never blocks the bridge reader or its neighbours.
+
 The listener defaults to loopback, TLS off, no Gateway Token: the only
 configuration that is safe without anyone deciding anything, and where the
 gRPC client ends up running is still undecided. Moving the listener onto the
@@ -177,8 +231,9 @@ encrypted at rest; see
 
 ## Status
 
-Lights can be listed, read and changed over gRPC, on a gateway that pairs
-itself with the bridge and remembers it across restarts, and every failure
-those RPCs can reach has a status and a retry rule. The event stream and the
-NixOS unit are tracked in the [open
+Lights can be listed, read and changed over gRPC, and every change the bridge
+reports can be streamed as it happens, on a gateway that pairs itself with the
+bridge and remembers it across restarts. Every failure those RPCs can reach
+has a status and a retry rule, and every gap in the event stream is announced
+and then narrowed by a resync. The NixOS unit is tracked in the [open
 issues](https://github.com/malamoney/hue/issues).

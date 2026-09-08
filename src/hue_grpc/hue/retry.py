@@ -25,15 +25,21 @@ import random
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
-__all__ = ["SAFE_METHODS", "Retry"]
+__all__ = ["SAFE_METHODS", "Retry", "full_jitter"]
 
 #: The HTTP methods that change nothing, and so can be sent twice. Every other
 #: method — `PUT` and `POST` are the ones this Gateway sends — is sent once.
 SAFE_METHODS = frozenset({"GET", "HEAD"})
 
 
-def _full_jitter(ceiling: float) -> float:
-    """A uniform draw from zero to `ceiling`."""
+def full_jitter(ceiling: float) -> float:
+    """A uniform draw from zero to `ceiling`.
+
+    Public because the event stream's reconnect schedule needs the same draw
+    for the same reason, and two spellings of it would be two things to keep
+    honest. What differs between the two policies is how long they go on for,
+    which is the dataclass around this rather than this.
+    """
     return random.uniform(0.0, ceiling)
 
 
@@ -54,7 +60,7 @@ class Retry:
     max_delay: float = 1.0
     #: How a pause is drawn from its ceiling. Injectable so that a test can
     #: see the schedule the jitter is drawn from.
-    jitter: Callable[[float], float] = _full_jitter
+    jitter: Callable[[float], float] = full_jitter
 
     def __post_init__(self) -> None:
         if self.attempts < 1:

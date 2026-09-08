@@ -38,6 +38,8 @@ __all__ = [
     "MalformedResourceError",
     "decode",
     "encode",
+    "hue_names",
+    "hue_numbers",
 ]
 
 _log = logging.getLogger(__name__)
@@ -165,7 +167,7 @@ def _enum_number(enum: EnumDescriptor, value: Any, path: str) -> int:
         raise MalformedResourceError(
             f"{path} is {_kind(value)}, expected one of {enum.name}'s names"
         )
-    number = _numbers_by_hue_name(enum).get(value.lower())
+    number = hue_numbers(enum).get(value.lower())
     if number is None:
         # A value from firmware newer than this Gateway. Refusing the whole
         # Resource over one property nobody has asked for yet would make a
@@ -224,7 +226,7 @@ def _enum_name(field: FieldDescriptor, number: int, path: str) -> str:
             f"{path} is {value.name}, which asks the bridge for nothing in "
             f"particular; leave the field unset to leave it alone"
         )
-    return _hue_names_by_number(field.enum_type)[number]
+    return hue_names(field.enum_type)[number]
 
 
 def _within_range(
@@ -242,7 +244,13 @@ def _within_range(
 
 
 @cache
-def _numbers_by_hue_name(enum: EnumDescriptor) -> Mapping[str, int]:
+def hue_numbers(enum: EnumDescriptor) -> Mapping[str, int]:
+    """Every value of `enum` by Hue's spelling of it: `light` -> `RTYPE_LIGHT`.
+
+    Public because the spelling rule is this module's and the event stream
+    needs it too: an event's `type` is one of these names, and a subscriber's
+    filter arrives as the numbers.
+    """
     prefix = _screaming_snake_case(enum.name) + "_"
     return MappingProxyType(
         {_hue_name(value.name, prefix): value.number for value in enum.values}
@@ -250,7 +258,8 @@ def _numbers_by_hue_name(enum: EnumDescriptor) -> Mapping[str, int]:
 
 
 @cache
-def _hue_names_by_number(enum: EnumDescriptor) -> Mapping[int, str]:
+def hue_names(enum: EnumDescriptor) -> Mapping[int, str]:
+    """The other direction: every value of `enum` by number, spelled Hue's way."""
     prefix = _screaming_snake_case(enum.name) + "_"
     return MappingProxyType(
         {value.number: _hue_name(value.name, prefix) for value in enum.values}
