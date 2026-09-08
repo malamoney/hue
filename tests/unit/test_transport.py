@@ -10,10 +10,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from typing import Any
 
 import pytest
 from conftest import BRIDGE_ID, BridgeCerts, FakeBridge, run
 
+from hue_grpc.hue.retry import Retry
 from hue_grpc.hue.tls import BridgeIdentityError
 from hue_grpc.hue.transport import (
     APPLICATION_KEY_HEADER,
@@ -325,3 +327,195 @@ def test_reports_the_bridges_status_to_whatever_rpc_is_being_served(
                 assert call.upstream_status == 207
 
     run(scenario())
+
+
+# Retries. The rule worth a listener rather than a stub is which requests the
+# Bridge actually receives, so every test here counts them at the Bridge.
+
+
+def hangs_up_first(failures: int, body: str = '{"data": []}') -> Any:
+    """A Bridge that drops `failures` connections and then answers.
+
+    A Bridge that closes a pooled connection while a request is on it is the
+    ordinary transient failure retrying exists for, and it looks exactly like
+    this from the other end.
+    """
+    served = 0
+
+    async def respond(writer: asyncio.StreamWriter) -> None:
+        nonlocal served
+        served += 1
+        if served <= failures:
+            writer.close()
+            return
+        payload = body.encode()
+        writer.write(
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Type: application/json\r\n"
+            b"Content-Length: " + str(len(payload)).encode() + b"\r\n"
+            b"Connection: close\r\n\r\n" + payload
+        )
+        await writer.drain()
+        writer.close()
+
+    return respond
+
+
+def prompt_retries(attempts: int) -> Retry:
+    """The real schedule with the waiting taken out."""
+    return Retry(attempts=attempts, base_delay=0.0, max_delay=0.0)
+
+
+def test_asks_again_when_a_read_loses_its_connection(
+    bridge_certs: BridgeCerts,
+) -> None:
+    async def scenario() -> None:
+        async with FakeBridge(bridge_certs, respond=hangs_up_first(2)) as bridge:
+            transport = HueTransport(
+                bridge_id=BRIDGE_ID,
+                address=bridge.address,
+                ca_pem=bridge_certs.ca_pem,
+                retry=prompt_retries(3),
+            )
+            async with transport:
+                payload = await transport.request("GET", "/clip/v2/resource/light")
+
+            assert payload == {"data": []}
+            assert len(bridge.requests) == 3
+
+    run(scenario())
+
+
+def test_gives_up_once_the_attempts_are_spent(bridge_certs: BridgeCerts) -> None:
+    async def scenario() -> None:
+        async with FakeBridge(bridge_certs, respond=hangs_up_first(99)) as bridge:
+            transport = HueTransport(
+                bridge_id=BRIDGE_ID,
+                address=bridge.address,
+                ca_pem=bridge_certs.ca_pem,
+                retry=prompt_retries(3),
+            )
+            async with transport:
+                with pytest.raises(BridgeUnreachableError):
+                    await transport.request("GET", "/clip/v2/resource/light")
+
+            assert len(bridge.requests) == 3
+
+    run(scenario())
+
+
+def test_never_sends_a_mutation_twice(bridge_certs: BridgeCerts) -> None:
+    """The Bridge may have turned the light on before the connection went."""
+
+    async def scenario() -> None:
+        async with FakeBridge(bridge_certs, respond=hangs_up_first(99)) as bridge:
+            transport = HueTransport(
+                bridge_id=BRIDGE_ID,
+                address=bridge.address,
+                ca_pem=bridge_certs.ca_pem,
+                retry=prompt_retries(5),
+            )
+            async with transport:
+                with pytest.raises(BridgeUnreachableError):
+                    await transport.request(
+                        "PUT", "/clip/v2/resource/light/abc", json={"on": {"on": True}}
+                    )
+
+            assert len(bridge.requests) == 1
+
+    run(scenario())
+
+
+def test_a_bridge_that_answered_is_not_asked_again(bridge_certs: BridgeCerts) -> None:
+    """A 503 and a 429 are the Bridge talking. Asking again is the client's
+    decision to make, with the whole round trip's worth of information."""
+
+    async def scenario() -> None:
+        for status in ("503 Service Unavailable", "429 Too Many Requests"):
+            async with FakeBridge(bridge_certs, status=status, body="{}") as bridge:
+                transport = HueTransport(
+                    bridge_id=BRIDGE_ID,
+                    address=bridge.address,
+                    ca_pem=bridge_certs.ca_pem,
+                    retry=prompt_retries(3),
+                )
+                async with transport:
+                    with pytest.raises(BridgeResponseError):
+                        await transport.request("GET", "/clip/v2/resource/light")
+
+                assert len(bridge.requests) == 1
+
+    run(scenario())
+
+
+def test_a_bridge_that_went_quiet_is_not_asked_again(
+    bridge_certs: BridgeCerts,
+) -> None:
+    """A read timeout has already spent the caller's patience once; spending
+    it again on the same silent Bridge only delays the answer."""
+
+    async def stall(writer: asyncio.StreamWriter) -> None:
+        await asyncio.sleep(2)
+
+    async def scenario() -> None:
+        async with FakeBridge(bridge_certs, respond=stall) as bridge:
+            transport = HueTransport(
+                bridge_id=BRIDGE_ID,
+                address=bridge.address,
+                ca_pem=bridge_certs.ca_pem,
+                timeouts=Timeouts(connect=30.0, read=0.2),
+                retry=prompt_retries(3),
+            )
+            async with transport:
+                with pytest.raises(BridgeTimeoutError):
+                    await transport.request("GET", "/clip/v2/resource/light")
+
+            assert len(bridge.requests) == 1
+
+    run(scenario())
+
+
+def test_the_event_stream_reconnects_on_its_own_terms(
+    bridge_certs: BridgeCerts,
+) -> None:
+    """`stream` never retries. An event stream that reconnected underneath its
+    reader would hide the Gap that reconnecting opens."""
+
+    async def scenario() -> None:
+        async with FakeBridge(bridge_certs, respond=hangs_up_first(99)) as bridge:
+            transport = HueTransport(
+                bridge_id=BRIDGE_ID,
+                address=bridge.address,
+                ca_pem=bridge_certs.ca_pem,
+                retry=prompt_retries(5),
+            )
+            async with transport:
+                with pytest.raises(BridgeUnreachableError):
+                    async with transport.stream("GET", "/eventstream/clip/v2"):
+                        pass  # pragma: no cover - the connection never opens
+
+            assert len(bridge.requests) == 1
+
+    run(scenario())
+
+
+def test_says_out_loud_that_it_asked_again(
+    bridge_certs: BridgeCerts, caplog: pytest.LogCaptureFixture
+) -> None:
+    async def scenario() -> None:
+        async with FakeBridge(bridge_certs, respond=hangs_up_first(1)) as bridge:
+            transport = HueTransport(
+                bridge_id=BRIDGE_ID,
+                address=bridge.address,
+                ca_pem=bridge_certs.ca_pem,
+                retry=prompt_retries(2),
+            )
+            async with transport:
+                await transport.request("GET", "/clip/v2/resource/light")
+
+    with caplog.at_level(logging.WARNING):
+        run(scenario())
+
+    retried = [record for record in caplog.records if "retrying" in record.getMessage()]
+    assert len(retried) == 1
+    assert "/clip/v2/resource/light" in retried[0].getMessage()

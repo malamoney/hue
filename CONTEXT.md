@@ -74,6 +74,20 @@ _Avoid_: update, patch, state, payload
 One Command applied to one Resource, and what the Bridge made of it. A Mutation can both succeed and fail: the Bridge reports what it changed and what it refused in the same successful exchange, and both halves are the answer.
 _Avoid_: write, transaction, mutation response
 
+### Failures
+
+**Error Envelope**:
+The `errors` array the Bridge answers with, in CLIP v2 alongside `data` and in
+the v1 API one per entry. Present on failed exchanges and on successful ones
+alike, so its presence says nothing about whether the request worked.
+_Avoid_: error response, error body, error payload
+
+**Safe Read**:
+A request that changes nothing, and so can be sent twice without the Gateway
+deciding anything. The opposite of a Mutation, which is sent once whatever
+happens to it.
+_Avoid_: idempotent request, retryable request, GET
+
 ### Serving
 
 **Listener**:

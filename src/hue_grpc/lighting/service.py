@@ -30,7 +30,7 @@ from hue_grpc.hue.transport import HueTransportError
 from hue_grpc.lighting.limits import COMMAND_RANGES
 from hue_grpc.logs import fields
 from hue_grpc.serving.serve import HostedService
-from hue_grpc.status import grpc_status_for
+from hue_grpc.status import status_for
 
 __all__ = ["SERVICE_NAME", "LightingServicer", "hosted_lighting_service"]
 
@@ -125,12 +125,12 @@ class LightingServicer(lighting_grpc.LightingServiceServicer):  # type: ignore[m
         try:
             yield self._lights
         except _ANSWERABLE as failure:
-            status = grpc_status_for(failure)
+            answer = status_for(failure)
             _log.warning(
                 "rpc could not be answered",
-                **fields(status=status.name, failure=type(failure).__name__),
+                **fields(status=answer.code.name, failure=type(failure).__name__),
             )
-            await context.abort(status, str(failure))
+            await context.abort(answer.code, answer.message)
 
 
 def _mutation(

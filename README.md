@@ -114,6 +114,24 @@ can arrive together: a bridge that made one change and could not reach the
 light for another reports both in one successful call, so Hue's own errors
 travel in the response rather than as a gRPC status.
 
+A gRPC status is for the other case — the bridge could not be reached, would
+not answer, or refused the exchange outright — and it carries what the bridge
+said along with it. `INVALID_ARGUMENT` is the code; `invalid value,
+dimming.brightness, 101` is the half of the answer that says which field to
+fix, and it survives the trip. `UNAVAILABLE` is a bridge that is not there,
+`DEADLINE_EXCEEDED` one that went quiet, `RESOURCE_EXHAUSTED` one that asked
+to be left alone, `UNIMPLEMENTED` one whose firmware does not serve the path,
+`FAILED_PRECONDITION` a bridge that no longer accepts the gateway's
+application key — which is a different secret from the caller's Gateway
+Token, and saying `UNAUTHENTICATED` would send them after the wrong one.
+
+A read that loses its connection is asked again, up to three times, with a
+jittered backoff bounded well inside the caller's deadline. A change is not,
+ever: a `PUT` that failed after the bridge acted on it cannot be told apart
+from one that failed before, and the gateway does not get to guess. A bridge
+that answered — a 429, a 503 — is not asked again either; that is a decision
+for the client, who can see the whole round trip.
+
 The listener defaults to loopback, TLS off, no Gateway Token: the only
 configuration that is safe without anyone deciding anything, and where the
 gRPC client ends up running is still undecided. Moving the listener onto the
@@ -160,8 +178,7 @@ encrypted at rest; see
 ## Status
 
 Lights can be listed, read and changed over gRPC, on a gateway that pairs
-itself with the bridge and remembers it across restarts. The event stream and
-the NixOS unit are tracked in the [open
-issues](https://github.com/malamoney/hue/issues), as is the rest of the error
-model: the mapping from Hue's failures to gRPC status is here, but only the
-part these three RPCs reach.
+itself with the bridge and remembers it across restarts, and every failure
+those RPCs can reach has a status and a retry rule. The event stream and the
+NixOS unit are tracked in the [open
+issues](https://github.com/malamoney/hue/issues).
