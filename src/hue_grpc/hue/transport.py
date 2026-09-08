@@ -17,6 +17,7 @@ from typing import Any
 import httpx
 
 from hue_grpc.hue.tls import bridge_ssl_context
+from hue_grpc.logs import record_upstream_status
 
 __all__ = [
     "APPLICATION_KEY_HEADER",
@@ -185,6 +186,10 @@ class HueTransport:
             raise BridgeUnreachableError(
                 str(unreachable) or repr(unreachable)
             ) from unreachable
+        # Whatever RPC is being served wants this on its own line. Nothing
+        # here knows an RPC is what it is serving, and outside one this is a
+        # no-op; `hue_grpc.logs` is the seam that keeps it that way.
+        record_upstream_status(response.status_code)
         _log.debug(
             "bridge response %s %s -> %s",
             request.method,

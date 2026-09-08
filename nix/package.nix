@@ -3,6 +3,8 @@
   buildPythonApplication,
   setuptools,
   grpcio,
+  grpcio-health-checking,
+  grpcio-reflection,
   protobuf,
   httpx,
   cryptography,
@@ -39,6 +41,8 @@ buildPythonApplication {
   # static configuration.
   dependencies = [
     grpcio
+    grpcio-health-checking
+    grpcio-reflection
     protobuf
     httpx
   ];

@@ -45,6 +45,46 @@ HUE_BRIDGE_ADDRESS=... HUE_BRIDGE_ID=... HUE_PRESS_LINK_BUTTON=1 \
 That leaves an entry named `hue-grpc#smoke-test` on the bridge; nothing stores
 the secrets yet, so remove it from the Hue app afterwards.
 
+## Running
+
+```sh
+nix run .                                              # 127.0.0.1:50051
+grpcurl -plaintext 127.0.0.1:50051 list
+grpcurl -plaintext -d '{}' 127.0.0.1:50051 grpc.health.v1.Health/Check
+```
+
+The listener defaults to loopback, TLS off, no Gateway Token: the only
+configuration that is safe without anyone deciding anything, and where the
+gRPC client ends up running is still undecided. Moving the listener onto the
+LAN is three flags and no code:
+
+```sh
+hue-grpc-server \
+    --listen-address 192.168.86.10 \
+    --tls-certificate-file /run/credentials/hue-grpc.service/tls.pem \
+    --tls-private-key-file /run/credentials/hue-grpc.service/tls.key \
+    --gateway-token-file /run/credentials/hue-grpc.service/gateway-token
+```
+
+A listener beyond loopback is refused without both TLS and a token, and there
+is no override — a TLS-terminating proxy on the same host talks to the
+loopback listener. The Gateway Token comes from a file rather than a flag
+because `ps` shows every argument to every user on the host.
+
+Reflection follows the listener: on for loopback, off for anything else,
+unless `--reflection on|off` says otherwise.
+
+Logs go to stderr, one JSON object per line, carrying a correlation ID, the
+method, the gRPC status, the upstream HTTP status and the duration.
+`--log-format text` is the same fields for a person. Neither the Application
+Key nor the Gateway Token is ever among them. A client can set its own
+correlation ID with the `x-correlation-id` metadata key.
+
+`SIGTERM` starts a graceful shutdown: health reports `NOT_SERVING` first, the
+listener keeps accepting for `--shutdown-drain` seconds so a client asking can
+be told, then it stops accepting, and calls still in flight have
+`--shutdown-grace` seconds before they are cancelled.
+
 ## State
 
 The Gateway's Registry Entry for its bridge — Bridge ID, address, model,
@@ -58,5 +98,7 @@ encrypted at rest; see
 
 ## Status
 
-Scaffolding only. The gateway itself is tracked in the [open
+The Gateway listens — health, reflection, the interceptor chain and graceful
+shutdown are in place — but it serves no Hue service through them yet. Lights, the event stream and the
+NixOS unit are tracked in the [open
 issues](https://github.com/malamoney/hue/issues).

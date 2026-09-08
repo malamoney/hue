@@ -66,6 +66,19 @@ _Avoid_: bulb, lamp, light
 A service exposed by a Device that emits light. One Device may expose several services, only one of which is a Light.
 _Avoid_: bulb, lamp, device
 
+### Serving
+
+**Listener**:
+The address, port and TLS settings the Gateway accepts gRPC calls on. Loopback
+with TLS off by default; anything else needs both TLS and a Gateway Token.
+_Avoid_: endpoint, socket, interface
+
+**Correlation ID**:
+The identifier tying every log line produced while serving one RPC together,
+across the layers that produce them. Taken from the client's
+`x-correlation-id` metadata when it sets one, minted otherwise.
+_Avoid_: request ID, trace ID, span ID
+
 ### Events
 
 **Gap**:

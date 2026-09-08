@@ -14,6 +14,8 @@ dynamic = ["version"]
 # address is static configuration. See docs/adr/ and the project CONTEXT.md.
 dependencies = [
   "grpcio",
+  "grpcio-health-checking",
+  "grpcio-reflection",
   "protobuf",
   "httpx",
 ]
@@ -61,5 +63,10 @@ ignore_missing_imports = true
 # grpcio ships no type information either, and neither typeshed's stubs nor
 # grpc-stubs are packaged in nixpkgs, so there is nothing to depend on.
 [[tool.mypy.overrides]]
-module = ["grpc", "grpc.*"]
+module = [
+  "grpc",
+  "grpc.*",
+  "grpc_health.*",
+  "grpc_reflection.*",
+]
 ignore_missing_imports = true
