@@ -8,6 +8,8 @@ result-*
 /src/hue_grpc/proto/
 
 # Python
+/build/
+*.egg-info/
 __pycache__/
 *.py[cod]
 .pytest_cache/
