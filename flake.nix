@@ -112,6 +112,11 @@
 
               export PYTHONPATH="$PWD/tools"
               export PYTHONDONTWRITEBYTECODE=1
+
+              # Regenerate into an emptied tree, so a file the manifest no
+              # longer produces shows up as a difference rather than
+              # surviving untouched.
+              rm -rf proto/hue
               python -m protogen --manifest proto/manifest.toml
 
               diff -ru ${self}/proto ./proto

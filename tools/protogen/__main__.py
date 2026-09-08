@@ -41,6 +41,13 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--allow-empty",
+        dest="allow_empty",
+        action="append",
+        metavar="SCOPE",
+        help="scope permitted to produce a message with no fields",
+    )
+    parser.add_argument(
         "--root",
         dest="roots",
         action="append",
@@ -55,6 +62,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.manifest:
+        conflicting = [
+            name
+            for name, value in (
+                ("--spec", args.spec),
+                ("--out", args.out),
+                ("--root", args.roots),
+                ("--numbers", args.numbers),
+            )
+            if value
+        ]
+        if conflicting:
+            unwanted = ", ".join(conflicting)
+            parser.error(
+                f"--manifest reads everything from the TOML; remove {unwanted}"
+            )
         return _generate_from_manifest(args.manifest)
 
     if not (args.spec and args.out and args.roots):
@@ -68,6 +90,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         package=args.package,
         header=GENERATED_HEADER,
         numbers=numbers,
+        allow_empty=args.allow_empty,
     )
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -80,22 +103,27 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _generate_from_manifest(path: Path) -> int:
+    """Generate from a manifest.
+
+    Paths inside the manifest are relative to the working directory, not to
+    the manifest itself, so the generator is always run from the repo root.
+    """
     manifest = load_manifest(path)
-    root = path.parent.parent
-    numbers_path = root / manifest.numbers
+    numbers_path = Path(manifest.numbers)
 
     numbers = FieldNumbers.load(numbers_path)
     generated = generate_files(
-        load_spec(root / manifest.spec),
+        load_spec(Path(manifest.spec)),
         manifest.files,
         package=manifest.package,
         default_file=manifest.default_file,
         numbers=numbers,
         header=GENERATED_HEADER,
+        allow_empty=manifest.allow_empty,
     )
 
     for relative, proto in sorted(generated.items()):
-        out = root / manifest.out_dir / relative
+        out = Path(manifest.out_dir) / relative
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(proto.render(), encoding="utf-8")
         print(f"wrote {out}", file=sys.stderr)

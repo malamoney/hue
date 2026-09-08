@@ -10,8 +10,15 @@ package = "hue.v1"
 default_file = "hue/v1/common.proto"
 numbers = "proto/field-numbers.json"
 
+# Objects that genuinely carry no fields. Anything else with no properties is
+# an error: an empty message can never carry a value.
+allow_empty = ["LightGet.Identify"]
+
+# ApiResponse is deliberately absent. Its `data` is an untyped array, so the
+# generic envelope cannot be modelled usefully; each service defines its own
+# response message by hand instead (#10, #11).
 [files."hue/v1/common.proto"]
-roots = ["ResourceIdentifier", "Error", "ApiResponse"]
+roots = ["ResourceIdentifier", "Error"]
 
 [files."hue/v1/lighting.proto"]
 roots = ["LightGet", "LightPut"]

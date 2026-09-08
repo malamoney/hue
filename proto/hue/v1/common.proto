@@ -108,13 +108,6 @@ message Alert {
   optional string action = 1;
 }
 
-message ApiResponse {
-  message Data {
-  }
-  repeated .hue.v1.Error errors = 1;
-  repeated Data data = 2;
-}
-
 message Color {
   .hue.v1.GamutPosition xy = 1;
 }
@@ -258,13 +251,6 @@ message Powerup {
   optional Dimming dimming = 4;
 }
 
-// Common resource properties
-message Resource {
-  string type = 1;
-  string id = 2;
-  optional string id_v1 = 3;
-}
-
 message ResourceIdentifier {
   enum Rtype {
     RTYPE_UNSPECIFIED = 0;
@@ -307,14 +293,6 @@ message ResourceIdentifier {
   }
   string rid = 1;
   Rtype rtype = 2;
-}
-
-// Common resource properties including the owner
-message ResourceOwned {
-  string type = 1;
-  string id = 2;
-  optional string id_v1 = 3;
-  .hue.v1.ResourceIdentifier owner = 4;
 }
 
 // Feature containing basic signaling properties.

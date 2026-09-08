@@ -7,6 +7,7 @@ syntax = "proto3";
 
 package hue.v1;
 
+import "google/protobuf/struct.proto";
 import "google/protobuf/timestamp.proto";
 
 message Event {
@@ -22,6 +23,8 @@ message Event {
     string type = 1;
     string id = 2;
     optional string id_v1 = 3;
+    // Keys the schema does not name individually.
+    optional .google.protobuf.Struct additional_properties = 4;
   }
   string id = 1;
   Type type = 2;

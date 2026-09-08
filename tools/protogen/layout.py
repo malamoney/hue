@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from protogen.convert import REF, SCHEMA_REF_PREFIX, _Converter
+from protogen.convert import _Converter
 from protogen.model import Message, OneOf, ProtoFile
 from protogen.naming import pascal_case
 from protogen.numbering import FieldNumbers
@@ -32,49 +32,48 @@ class FileSpec:
     oneofs: OneOfSpec = field(default_factory=dict)
 
 
-def _refs_in(node: Any) -> list[str]:
-    """Every component `$ref` anywhere inside `node`."""
-    found: list[str] = []
-    if isinstance(node, dict):
-        for key, value in node.items():
-            if (
-                key == REF
-                and isinstance(value, str)
-                and value.startswith(SCHEMA_REF_PREFIX)
-            ):
-                found.append(value[len(SCHEMA_REF_PREFIX) :])
-            else:
-                found.extend(_refs_in(value))
-    elif isinstance(node, list):
-        for item in node:
-            found.extend(_refs_in(item))
-    return found
-
-
-def _reachable(spec: dict[str, Any], roots: list[str]) -> set[str]:
-    schemas = spec.get("components", {}).get("schemas", {})
-    seen: set[str] = set()
-    queue = list(roots)
-    while queue:
-        name = queue.pop()
-        if name in seen or name not in schemas:
-            continue
-        seen.add(name)
-        queue.extend(_refs_in(schemas[name]))
-    return seen
-
-
 def plan_ownership(
-    spec: dict[str, Any], files: list[FileSpec], default_file: str
+    spec: dict[str, Any],
+    files: list[FileSpec],
+    default_file: str,
+    allow_empty: set[str],
 ) -> dict[str, str]:
-    """Map each schema's protobuf name to the file that will declare it."""
+    """Map each schema's protobuf name to the file that will declare it.
+
+    Which schemas are needed is discovered by running the conversion once and
+    seeing what it actually emits, rather than scanning for `$ref` textually:
+    a multi-member `allOf` is flattened and inlined, so its members are never
+    referenced by name and must not be emitted as messages of their own.
+    """
+    schemas = spec.get("components", {}).get("schemas", {})
+
     owner_of: dict[str, str] = {}
+    claimed_by: dict[str, str] = {}
     for file_spec in files:
         for root in file_spec.roots:
+            if root not in schemas:
+                raise ValueError(
+                    f"{file_spec.path}: root {root!r} is not a schema in the spec"
+                )
+            if root in claimed_by:
+                raise ValueError(
+                    f"root {root!r} is claimed by both {claimed_by[root]} and "
+                    f"{file_spec.path}"
+                )
+            claimed_by[root] = file_spec.path
             owner_of[pascal_case(root)] = file_spec.path
 
-    all_roots = [root for file_spec in files for root in file_spec.roots]
-    for name in sorted(_reachable(spec, all_roots)):
+    # Discovery runs against throwaway numbering: these assignments are not
+    # the ones that get committed.
+    needed: set[str] = set()
+    for file_spec in files:
+        converter = _Converter(
+            spec, "discovery", FieldNumbers(), allow_empty=allow_empty
+        )
+        converter.convert(list(file_spec.roots))
+        needed |= converter.emitted_components
+
+    for name in sorted(needed):
         owner_of.setdefault(pascal_case(name), default_file)
     return owner_of
 
@@ -121,10 +120,12 @@ def generate_files(
     default_file: str,
     numbers: FieldNumbers | None = None,
     header: str | None = None,
+    allow_empty: list[str] | None = None,
 ) -> dict[str, ProtoFile]:
     """Generate every file described by `files`, plus the default file."""
     numbers = numbers or FieldNumbers()
-    owner_of = plan_ownership(spec, files, default_file)
+    permitted_empty = set(allow_empty or [])
+    owner_of = plan_ownership(spec, files, default_file, permitted_empty)
 
     by_path = {file_spec.path: file_spec for file_spec in files}
     by_path.setdefault(default_file, FileSpec(default_file, roots=[]))
@@ -133,13 +134,17 @@ def generate_files(
     owned: dict[str, list[str]] = {path: [] for path in by_path}
     schemas = spec.get("components", {}).get("schemas", {})
     for schema_name in schemas:
+        # Only schemas ownership actually assigned: anything unreferenced is
+        # not emitted at all, so it cannot consume field numbers.
         owner = owner_of.get(pascal_case(schema_name))
         if owner in owned:
             owned[owner].append(schema_name)
 
     generated: dict[str, ProtoFile] = {}
     for path, file_spec in by_path.items():
-        converter = _Converter(spec, package, numbers, owner_of, path)
+        converter = _Converter(
+            spec, package, numbers, owner_of, path, allow_empty=permitted_empty
+        )
         messages, enums = converter.convert(sorted(owned[path]))
         if not messages and not enums:
             continue
@@ -186,6 +191,7 @@ class Manifest:
     default_file: str
     numbers: str
     files: list[FileSpec]
+    allow_empty: list[str]
 
 
 def load_manifest(path: Path) -> Manifest:
@@ -211,4 +217,5 @@ def load_manifest(path: Path) -> Manifest:
         default_file=raw["default_file"],
         numbers=raw["numbers"],
         files=files,
+        allow_empty=list(raw.get("allow_empty", [])),
     )
