@@ -52,6 +52,12 @@ extend-exclude = ["src/hue"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 
+[tool.ruff.lint.isort]
+# `hue` is generated into src/ by the build, so whether it is on disk when
+# lint runs depends on where lint runs — and ruff would otherwise call it
+# first-party here and third-party in CI, sorting the same file two ways.
+known-first-party = ["hue", "hue_grpc"]
+
 [tool.mypy]
 python_version = "3.12"
 strict = true
