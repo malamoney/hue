@@ -5,6 +5,7 @@
   grpcio,
   protobuf,
   httpx,
+  cryptography,
   pytestCheckHook,
 }:
 
@@ -42,7 +43,12 @@ buildPythonApplication {
     httpx
   ];
 
-  nativeCheckInputs = [ pytestCheckHook ];
+  # cryptography is test-only: the TLS tests mint Bridge-shaped certificates
+  # to serve, rather than reaching for a real Bridge.
+  nativeCheckInputs = [
+    pytestCheckHook
+    cryptography
+  ];
 
   pythonImportsCheck = [ "hue_grpc" ];
 

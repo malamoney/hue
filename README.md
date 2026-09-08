@@ -27,6 +27,13 @@ Unit tests are pure Python and run on macOS. The package targets
 `x86_64-linux`; NixOS VM tests run in CI, since no fast native x86_64-linux
 builder is available locally.
 
+`tests/smoke` talks to a real bridge and is excluded from the packaged test
+run. Point it at one by hand:
+
+```sh
+HUE_BRIDGE_ADDRESS=192.168.86.223 HUE_BRIDGE_ID=ECB5FAFFFE334703 pytest tests/smoke
+```
+
 ## Status
 
 Scaffolding only. The gateway itself is tracked in the [open

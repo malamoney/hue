@@ -27,9 +27,15 @@ version = { attr = "hue_grpc.__version__" }
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# Philips' root CA. The Bridge never serves it, so it has to ship with the
+# package or no connection can be verified at all.
+[tool.setuptools.package-data]
+"hue_grpc.hue" = ["*.pem"]
+
 [tool.pytest.ini_options]
 # Only the runtime package's tests. The generator under tools/ is build
 # tooling with its own dependencies and its own flake check.
+# tests/smoke needs a real Bridge on the network and is run by hand.
 testpaths = ["tests/unit"]
 # No pythonpath entry on purpose: under Nix the check phase must exercise the
 # installed package, not the source tree. The dev shell exports PYTHONPATH.

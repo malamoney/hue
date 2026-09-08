@@ -39,6 +39,7 @@
               ps.grpcio-tools
               ps.protobuf
               ps.httpx
+              ps.cryptography
               ps.pytest
               ps.mypy
               ps.pyyaml
@@ -137,6 +138,7 @@
                   ps.grpcio
                   ps.protobuf
                   ps.httpx
+                  ps.cryptography
                 ]))
               ];
             }
