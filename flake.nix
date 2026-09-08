@@ -209,6 +209,67 @@
               mypy
               touch $out
             '';
+      }
+      // nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+        # Issue #13's acceptance short of booting a VM (that is issue #14):
+        # the module evaluates, and the unit it generates carries the named
+        # hardening set, the address-family landmine fix, and secrets that
+        # arrive only by LoadCredential and runtime path.
+        nixos-module =
+          let
+            machine = nixpkgs.lib.nixosSystem {
+              inherit (pkgs) system;
+              modules = [
+                self.nixosModules.default
+                {
+                  boot.isContainer = true;
+                  system.stateVersion = "26.05";
+                  services.hue-grpc = {
+                    enable = true;
+                    bridge = {
+                      address = "192.168.86.223";
+                      id = "ECB5FAFFFE334703";
+                      credentialsFile = "/run/secrets/hue-grpc";
+                    };
+                  };
+                }
+              ];
+            };
+            unit = machine.config.systemd.units."hue-grpc.service".unit;
+          in
+          pkgs.runCommand "hue-grpc-nixos-module" { } ''
+            service="${unit}/hue-grpc.service"
+            cat "$service"
+
+            for directive in \
+              'DynamicUser=true' \
+              'StateDirectory=hue-grpc' \
+              'StateDirectoryMode=0700' \
+              'NoNewPrivileges=true' \
+              'PrivateTmp=true' \
+              'ProtectSystem=strict' \
+              'ProtectHome=true' \
+              'ProtectKernelTunables=true' \
+              'ProtectKernelModules=true' \
+              'ProtectControlGroups=true' \
+              'Restart=on-failure' \
+              'RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX'
+            do
+              grep -qF "$directive" "$service" \
+                || { echo "unit is missing: $directive" >&2; exit 1; }
+            done
+
+            # Secrets: loaded as credentials, referenced by the %d runtime
+            # path, and the credentials source never rendered into an argument.
+            grep -qF 'LoadCredential=hue-credentials:/run/secrets/hue-grpc' "$service"
+            grep -qF -- '--hue-credentials-file %d/hue-credentials' "$service"
+
+            # Non-secret configuration is rendered in.
+            grep -qF -- '--bridge-address 192.168.86.223' "$service"
+            grep -qF -- '--bridge-id ECB5FAFFFE334703' "$service"
+
+            touch $out
+          '';
       });
 
       formatter = forAllSystems (pkgs: pkgs.nixfmt);

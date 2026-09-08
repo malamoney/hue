@@ -218,6 +218,48 @@ listener keeps accepting for `--shutdown-drain` seconds so a client asking can
 be told, then it stops accepting, and calls still in flight have
 `--shutdown-grace` seconds before they are cancelled.
 
+## NixOS
+
+The flake exports `nixosModules.default`. A minimal host:
+
+```nix
+{
+  imports = [ hue-grpc.nixosModules.default ];
+
+  services.hue-grpc = {
+    enable = true;
+    bridge = {
+      address = "192.168.86.223";
+      id = "ECB5FAFFFE334703";
+      # A file of `key=value` lines: application-key=..., optionally client-key=...
+      credentialsFile = "/run/secrets/hue-grpc";
+    };
+  };
+}
+```
+
+`enable` builds a hardened systemd unit — `DynamicUser`, `StateDirectory`,
+`ProtectSystem=strict`, and the rest — that runs the gateway as
+`hue-grpc.service`. The listener defaults to `127.0.0.1:50051`; `port` and
+`openFirewall` adjust that, and a non-loopback `listenAddress` is refused at
+build time without `grpc.tls.enable` and `grpc.tokenFile`, the same rule the
+server enforces on startup.
+
+`bridge.*` points the gateway at one bridge without pairing or discovery: the
+address and id are configuration, and the Application Key is handed over by
+`credentialsFile`, loaded through systemd `LoadCredential`. That path — along
+with `grpc.tls.privateKeyFile` and `grpc.tokenFile` — is the only way a
+secret reaches the service: never an `ExecStart` argument, a Nix-rendered
+environment variable, or anything else that lands in the store. It can come
+from `sops-nix`, `agenix`, or a root-owned file under `/run/secrets`. When
+`bridge.*` is set the registry file is not read at all; leaving it unset
+falls back to a paired `registry.json` under the state directory, which for
+now is written by running `hue-grpc-server pair` (see [Pairing](#pairing))
+against the same state directory.
+
+The aggressive half of the sandbox — a syscall filter, tighter namespace and
+capability limits — is a later pass, tested against a booted VM.
+
 ## State
 
 The Gateway's Registry Entry for its bridge — Bridge ID, address, model,
