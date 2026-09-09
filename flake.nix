@@ -326,6 +326,8 @@
                 want "$service" 'LockPersonality=true'
                 want "$service" 'SystemCallArchitectures=native'
                 want "$service" 'UMask=0077'
+                want "$service" 'SystemCallFilter=@system-service'
+                want "$service" 'SystemCallErrorNumber=EPERM'
                 # An empty bounding set, not merely a narrowed one.
                 want "$service" 'CapabilityBoundingSet='
                 deny "$service" 'CapabilityBoundingSet=CAP_'

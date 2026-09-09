@@ -319,6 +319,12 @@ in
         SystemCallArchitectures = "native";
         UMask = "0077";
 
+        # The curated service allowlist. A blocked call fails with EPERM rather
+        # than a SIGSYS kill, so a future dependency that reaches for something
+        # exotic degrades visibly instead of dying.
+        SystemCallFilter = [ "@system-service" ];
+        SystemCallErrorNumber = "EPERM";
+
         # The documented landmine. The default-deny set drops the AF_INET and
         # AF_INET6 sockets the Bridge connection needs; AF_UNIX is for the
         # journal. These three are the empirical floor: the VM test proves the
