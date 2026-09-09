@@ -239,14 +239,23 @@ SUBPID=""
 GWPID=""
 KEY_TMP=""
 
-# grpcurl, jq and curl are not in a base NixOS PATH; re-exec once inside a shell
-# that has them (everything else — nix, systemctl, nixos-rebuild — is already
-# on PATH).
-if { ! command -v grpcurl >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; } \
-   && [[ -z "${_HUE_WIZARD_REEXEC:-}" ]] && command -v nix >/dev/null 2>&1; then
+# grpcurl and jq are on no base PATH; nor, in a bare `nix shell` or the
+# nixos/nix image, are the GNU basics the stages lean on (sed, tail, awk).
+# If anything's missing, re-exec once inside a nix shell that has the lot.
+# (systemd tools stay the deploy host's job — not nix-shellable.)
+_hue_have_tools() {
+  local t
+  for t in grpcurl jq curl sed tail awk grep; do
+    command -v "$t" >/dev/null 2>&1 || return 1
+  done
+}
+if ! _hue_have_tools && [[ -z "${_HUE_WIZARD_REEXEC:-}" ]] && command -v nix >/dev/null 2>&1; then
   export _HUE_WIZARD_REEXEC=1
-  echo "  fetching grpcurl + jq + curl via nix shell ..."
-  exec nix shell nixpkgs#grpcurl nixpkgs#jq nixpkgs#curl --command bash "$0" "$@"
+  echo "  entering a nix shell with the tools the wizard needs ..."
+  exec nix shell \
+    nixpkgs#grpcurl nixpkgs#jq nixpkgs#curl \
+    nixpkgs#coreutils nixpkgs#gnused nixpkgs#gnugrep nixpkgs#gawk \
+    --command bash "$0" "$@"
 fi
 
 # shred_file PATH — wipe a file that held secret material, best effort.
@@ -276,12 +285,13 @@ banner "hue-grpc · $([[ $DEPLOY == 1 ]] && echo 'deploy to NixOS and ')smoke-te
 
 # ── preflight ───────────────────────────────────────────────────────────
 stage "Preflight and bridge identity"
+common_tools="nix grpcurl jq curl sed tail awk grep"
 if [[ $DEPLOY == 1 ]]; then
   say "Run this on the NixOS host that will run the gateway, from this repo."
-  tools="nix nixos-rebuild systemctl journalctl systemd-analyze grpcurl jq curl"
+  tools="$common_tools nixos-rebuild systemctl journalctl systemd-analyze"
 else
   say "--skip-deploy: pair, smoke-test and run the gateway here, no systemd."
-  tools="nix grpcurl jq curl"
+  tools="$common_tools"
 fi
 missing=""
 for t in $tools; do
@@ -403,7 +413,7 @@ EOF
   say "and grpc.tokenFile options.)"
   confirm "Added that to your configuration and saved it?" \
     || { warn "add it, then re-run — earlier stages will be skipped"; exit 1; }
-  ask FLAKE_TARGET "System flake target for nixos-rebuild (e.g. /etc/nixos#$(hostname -s)):"
+  ask FLAKE_TARGET "System flake target for nixos-rebuild (e.g. /etc/nixos#${HOSTNAME:-hostname}):"
   [[ -n "$FLAKE_TARGET" ]] || { warn "need a flake target"; exit 1; }
   write_env FLAKE_TARGET "$FLAKE_TARGET"
 
