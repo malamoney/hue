@@ -328,6 +328,7 @@
                 want "$service" 'UMask=0077'
                 want "$service" 'SystemCallFilter=@system-service'
                 want "$service" 'SystemCallErrorNumber=EPERM'
+                want "$service" 'MemoryDenyWriteExecute=true'
                 # An empty bounding set, not merely a narrowed one.
                 want "$service" 'CapabilityBoundingSet='
                 deny "$service" 'CapabilityBoundingSet=CAP_'

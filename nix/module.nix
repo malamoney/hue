@@ -325,6 +325,12 @@ in
         SystemCallFilter = [ "@system-service" ];
         SystemCallErrorNumber = "EPERM";
 
+        # In last and alone: this occasionally breaks Python C extensions that
+        # JIT or otherwise map writable-then-executable pages. The VM test
+        # exercises `grpcio` end to end, so if it stays green this holds; back
+        # this one directive out first if a future dependency objects.
+        MemoryDenyWriteExecute = true;
+
         # The documented landmine. The default-deny set drops the AF_INET and
         # AF_INET6 sockets the Bridge connection needs; AF_UNIX is for the
         # journal. These three are the empirical floor: the VM test proves the
