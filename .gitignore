@@ -22,3 +22,7 @@ __pycache__/
 
 # macOS
 .DS_Store
+
+# issue #16 smoke-test run artifacts (scripts/deploy-and-smoke-test.sh)
+/issue-16-smoke-report.env
+/issue-16-lights-inventory.json

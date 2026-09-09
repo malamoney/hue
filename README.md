@@ -276,6 +276,13 @@ the module's unit and one running a fake Bridge, exercising a read, a
 mutation, an event stream, a restart, and a bridge interruption end to end,
 and confirming the Application Key never reaches the journal.
 
+The same walk against real hardware — pair, install the Credentials File,
+`nixos-rebuild switch`, then read, change and restore one chosen light, prove
+the event stream and its gap-then-resync, and grep the journal for the key —
+is [`scripts/deploy-and-smoke-test.sh`](./scripts/deploy-and-smoke-test.sh),
+a wizard run on the NixOS host that stops at every mutation and leaves a
+record of what the Bridge was and what it did.
+
 ## State
 
 The Gateway's Registry Entry for its bridge — Bridge ID, address, model,
