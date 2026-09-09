@@ -309,8 +309,30 @@
                 want "$service" 'ProtectHome=true'
                 want "$service" 'ProtectKernelTunables=true'
                 want "$service" 'ProtectKernelModules=true'
+                want "$service" 'ProtectKernelLogs=true'
                 want "$service" 'ProtectControlGroups=true'
                 want "$service" 'Restart=on-failure'
+
+                # Issue #15's empirical tightening pass. Each of these is a
+                # directive the gateway keeps working without, proven by the
+                # VM test staying green with systemd-analyze recording it.
+                want "$service" 'PrivateDevices=true'
+                want "$service" 'ProtectHostname=true'
+                want "$service" 'ProtectProc=invisible'
+                want "$service" 'ProcSubset=pid'
+                want "$service" 'RestrictNamespaces=true'
+                want "$service" 'RestrictRealtime=true'
+                want "$service" 'RestrictSUIDSGID=true'
+                want "$service" 'LockPersonality=true'
+                want "$service" 'SystemCallArchitectures=native'
+                want "$service" 'UMask=0077'
+                want "$service" 'SystemCallFilter=@system-service'
+                want "$service" 'SystemCallErrorNumber=EPERM'
+                want "$service" 'MemoryDenyWriteExecute=true'
+                # An empty bounding set, not merely a narrowed one.
+                want "$service" 'CapabilityBoundingSet='
+                deny "$service" 'CapabilityBoundingSet=CAP_'
+                deny "$service" 'CapabilityBoundingSet=~'
                 # systemd unions repeated RestrictAddressFamilies= lines, and
                 # NixOS renders the list one family per line.
                 want "$service" 'RestrictAddressFamilies=AF_INET'

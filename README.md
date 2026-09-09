@@ -264,8 +264,12 @@ directory, written for now by running `hue-grpc-server pair` (see
 Everything the module does not surface — `--reflection`, `--log-level`, the
 event queue size — is reachable through `extraArgs`.
 
-The aggressive half of the sandbox — a syscall filter, tighter namespace and
-capability limits — is a later pass, tested against a booted VM.
+The rest of the sandbox — `SystemCallFilter=@system-service`, an empty
+`CapabilityBoundingSet`, `RestrictNamespaces`, `PrivateDevices`,
+`MemoryDenyWriteExecute`, and the other namespace and personality limits —
+was derived empirically against that booted VM: each directive is one the
+Gateway keeps working without, and the VM test runs `systemd-analyze
+security` on the live unit so the score cannot regress unnoticed.
 
 `checks.integration-vm` (Linux only) is that booted VM: two nodes, one running
 the module's unit and one running a fake Bridge, exercising a read, a

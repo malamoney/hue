@@ -10,12 +10,15 @@
 # `bridge.caFile` is config, not a secret — a CA certificate — so it is a
 # plain `ExecStart` argument like the address and the Bridge ID.
 #
-# The aggressive half of the sandbox — a `SystemCallFilter`, namespace and
-# capability restrictions beyond what outbound HTTPS needs — is issue #15's
-# tightening pass, done against the VM test from issue #14. This unit carries
-# the set issue #13 named plus the one documented landmine: a default-deny
-# `RestrictAddressFamilies` drops the sockets the Bridge connection needs and
-# fails with an error that reads as anything but a networking problem.
+# The sandbox below was tightened empirically against issue #14's VM test
+# (issue #15): every directive is one the gateway keeps working without, kept
+# honest by `systemd-analyze security` recording the score in that test while
+# it stays green. Two directives are known landmines. `RestrictAddressFamilies`
+# is default-deny of the AF_INET/AF_INET6 sockets the Bridge connection needs,
+# failing with an error that reads as anything but a networking problem, so it
+# stays at the three families the gateway actually opens. `MemoryDenyWriteExecute`
+# can break Python C extensions, so it went in last and alone and is the first
+# thing to back out if `grpcio` ever objects.
 self:
 
 {
@@ -295,16 +298,43 @@ in
 
         NoNewPrivileges = true;
         PrivateTmp = true;
+        PrivateDevices = true;
         ProtectSystem = "strict";
         ProtectHome = true;
         ProtectKernelTunables = true;
         ProtectKernelModules = true;
+        ProtectKernelLogs = true;
         ProtectControlGroups = true;
+        ProtectHostname = true;
+        ProtectProc = "invisible";
+        ProcSubset = "pid";
+        RestrictNamespaces = true;
+        RestrictRealtime = true;
+        RestrictSUIDSGID = true;
+        LockPersonality = true;
+
+        # The gateway binds unprivileged ports and never changes uid, so it
+        # needs no capabilities at all.
+        CapabilityBoundingSet = "";
+        SystemCallArchitectures = "native";
+        UMask = "0077";
+
+        # The curated service allowlist. A blocked call fails with EPERM rather
+        # than a SIGSYS kill, so a future dependency that reaches for something
+        # exotic degrades visibly instead of dying.
+        SystemCallFilter = [ "@system-service" ];
+        SystemCallErrorNumber = "EPERM";
+
+        # In last and alone: this occasionally breaks Python C extensions that
+        # JIT or otherwise map writable-then-executable pages. The VM test
+        # exercises `grpcio` end to end, so if it stays green this holds; back
+        # this one directive out first if a future dependency objects.
+        MemoryDenyWriteExecute = true;
 
         # The documented landmine. The default-deny set drops the AF_INET and
         # AF_INET6 sockets the Bridge connection needs; AF_UNIX is for the
-        # journal. Narrowing further is issue #15's job, against a VM that
-        # can prove the Bridge is still reachable.
+        # journal. These three are the empirical floor: the VM test proves the
+        # Bridge is still reachable, and no discovery means no AF_NETLINK.
         RestrictAddressFamilies = [
           "AF_INET"
           "AF_INET6"

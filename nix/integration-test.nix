@@ -213,6 +213,16 @@ pkgs.testers.runNixOSTest {
     # Step 6: the standard gRPC health endpoint.
     gateway.succeed(GRPCURL + "grpc.health.v1.Health/Check | grep -q SERVING")
 
+    # Issue #15: record the hardening score against a unit that is up and
+    # serving, and fail if it regresses out of the "OK" band the empirical
+    # tightening pass reached.
+    report = gateway.succeed("systemd-analyze security --no-pager hue-grpc.service")
+    print(report)
+    overall = [ln for ln in report.splitlines() if "Overall exposure level" in ln]
+    assert overall, report
+    exposure = float(overall[0].split(":")[1].split()[0])
+    assert exposure < 4.0, overall[0]
+
     # Step 7a: one read.
     listed = json.loads(gateway.succeed(GRPCURL + "hue.v1.LightingService/ListLights"))
     assert any(
