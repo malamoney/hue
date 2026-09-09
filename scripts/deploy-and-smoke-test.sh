@@ -195,8 +195,31 @@ finish() {
 # phone with the Hue app for the two stages a person has to drive by hand.
 # Stop with Ctrl-C at any point and re-run: pairing, the credentials file and
 # the captured values are all picked up again rather than redone.
+#
+#     bash scripts/deploy-and-smoke-test.sh --skip-deploy
+#
+# skips everything that needs a booted NixOS with systemd — the credentials
+# file, the module config, `nixos-rebuild switch`, the journal scan — and
+# instead runs the gateway itself from `nix build`. That covers pair, list,
+# read, change/restore, the event stream and its gap/resync on any Linux box
+# (a nix container, say) that can reach the bridge. No sudo.
 
-TOTAL_STAGES=10
+DEPLOY=1
+for arg in "$@"; do
+  case "$arg" in
+    --skip-deploy) DEPLOY=0 ;;
+    -h | --help)
+      echo "usage: bash scripts/deploy-and-smoke-test.sh [--skip-deploy]"
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $arg" >&2
+      exit 2
+      ;;
+  esac
+done
+
+TOTAL_STAGES=$([[ $DEPLOY == 1 ]] && echo 10 || echo 8)
 
 # The record the wizard leaves behind, per issue #16's "Record" section.
 ENV_FILE="${REPORT_FILE:-issue-16-smoke-report.env}"
@@ -210,17 +233,29 @@ BRIDGE_ID_DEFAULT="ECB5FAFFFE334703"
 REG="${XDG_STATE_HOME:-$HOME/.local/state}/hue-grpc/registry.json"
 SUB="${TMPDIR:-/tmp}/hue-events.ndjson"
 JOURNAL="${TMPDIR:-/tmp}/hue-journal.txt"
+GWLOG="${TMPDIR:-/tmp}/hue-gateway.log"     # --skip-deploy: the gateway's own stderr
+GWRESULT="${TMPDIR:-/tmp}/hue-wizard-result"
 SUBPID=""
+GWPID=""
 KEY_TMP=""
 
-# grpcurl and jq are not in a base NixOS PATH; re-exec once inside a shell
-# that has them (everything else — nix, systemctl, nixos-rebuild — is already
-# on PATH).
-if { ! command -v grpcurl >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; } \
-   && [[ -z "${_HUE_WIZARD_REEXEC:-}" ]] && command -v nix >/dev/null 2>&1; then
+# grpcurl and jq are on no base PATH; nor, in a bare `nix shell` or the
+# nixos/nix image, are the GNU basics the stages lean on (sed, tail, awk).
+# If anything's missing, re-exec once inside a nix shell that has the lot.
+# (systemd tools stay the deploy host's job — not nix-shellable.)
+_hue_have_tools() {
+  local t
+  for t in grpcurl jq curl sed tail awk grep; do
+    command -v "$t" >/dev/null 2>&1 || return 1
+  done
+}
+if ! _hue_have_tools && [[ -z "${_HUE_WIZARD_REEXEC:-}" ]] && command -v nix >/dev/null 2>&1; then
   export _HUE_WIZARD_REEXEC=1
-  echo "  fetching grpcurl + jq via nix shell ..."
-  exec nix shell nixpkgs#grpcurl nixpkgs#jq --command bash "$0" "$@"
+  echo "  entering a nix shell with the tools the wizard needs ..."
+  exec nix shell \
+    nixpkgs#grpcurl nixpkgs#jq nixpkgs#curl \
+    nixpkgs#coreutils nixpkgs#gnused nixpkgs#gnugrep nixpkgs#gawk \
+    --command bash "$0" "$@"
 fi
 
 # shred_file PATH — wipe a file that held secret material, best effort.
@@ -232,6 +267,7 @@ shred_file() {
 
 cleanup() {
   [[ -n "$SUBPID" ]] && kill "$SUBPID" 2>/dev/null || true
+  [[ -n "$GWPID" ]] && kill "$GWPID" 2>/dev/null || true
   [[ -n "$KEY_TMP" ]] && shred_file "$KEY_TMP"
 }
 trap cleanup EXIT
@@ -245,13 +281,20 @@ count_in() {
   printf '%s' "${n:-0}"
 }
 
-banner "hue-grpc · deploy to NixOS and smoke-test the real bridge"
+banner "hue-grpc · $([[ $DEPLOY == 1 ]] && echo 'deploy to NixOS and ')smoke-test the real bridge"
 
-# ── 1 ────────────────────────────────────────────────────────────────────
+# ── preflight ───────────────────────────────────────────────────────────
 stage "Preflight and bridge identity"
-say "Run this on the NixOS host that will run the gateway, from this repo."
+common_tools="nix grpcurl jq curl sed tail awk grep"
+if [[ $DEPLOY == 1 ]]; then
+  say "Run this on the NixOS host that will run the gateway, from this repo."
+  tools="$common_tools nixos-rebuild systemctl journalctl systemd-analyze"
+else
+  say "--skip-deploy: pair, smoke-test and run the gateway here, no systemd."
+  tools="$common_tools"
+fi
 missing=""
-for t in nix nixos-rebuild systemctl journalctl systemd-analyze grpcurl jq curl; do
+for t in $tools; do
   command -v "$t" >/dev/null 2>&1 || { warn "missing on PATH: $t"; missing=1; }
 done
 [[ -z "$missing" ]] || { warn "install the above and re-run"; exit 1; }
@@ -287,7 +330,7 @@ write_env BRIDGE_FIRMWARE    "$b_sw"
 write_env BRIDGE_APIVERSION  "$b_api"
 write_env SMOKE_STARTED_AT   "$STARTED_AT"
 
-# ── 2 ────────────────────────────────────────────────────────────────────
+# ── pair ────────────────────────────────────────────────────────────────
 stage "Pair with the bridge — physical button press"
 if [[ -f "$REG" ]] && jq -e '.bridge.application_key' "$REG" >/dev/null 2>&1; then
   say "A registry already exists at:"
@@ -298,15 +341,27 @@ if [[ -f "$REG" ]] && jq -e '.bridge.application_key' "$REG" >/dev/null 2>&1; th
 else
   warn "This mints a REAL Application Key and only works within ~30 seconds of"
   warn "pressing the bridge's link button."
+  # Build the gateway before the button press, not inside the retry loop: a
+  # build failure is not a pairing failure, and 30 seconds is not the time to
+  # discover the binary won't compile.
+  say "building the gateway (cached after the first run) ..."
+  if ! nix build "$FLAKE#hue-grpc" -o "$GWRESULT" --print-build-logs; then
+    warn "the gateway did not build — fix that above, then re-run."
+    warn "a bare 'g++ ... exit code 1' with no diagnostic is usually the build"
+    warn "host running out of memory on grpcio-tools; give it more RAM + swap."
+    exit 1
+  fi
+  hue_cli="$GWRESULT/bin/hue-grpc-server"
   pause "Walk to the bridge, press the round link button on top, come back, Enter."
   paired=""
   for attempt in 1 2 3; do
     say "pairing (attempt $attempt/3) ..."
-    if nix run "$FLAKE" -- pair \
-         --bridge-address "$HUE_BRIDGE_ADDRESS" --bridge-id "$HUE_BRIDGE_ID"; then
-      paired=1; break
+    if "$hue_cli" pair \
+      --bridge-address "$HUE_BRIDGE_ADDRESS" --bridge-id "$HUE_BRIDGE_ID"; then
+      paired=1
+      break
     fi
-    warn "that did not take — press the link button again"
+    warn "that did not take — press the link button again, within 30s of Enter"
     pause "Enter to retry"
   done
   [[ -n "$paired" ]] || { warn "pairing did not succeed"; exit 1; }
@@ -317,28 +372,29 @@ CLIENT_KEY="$(jq -r '.bridge.client_key // empty' "$REG")"
   || { warn "no application key in $REG"; exit 1; }
 say "Application Key present (${#APP_KEY} chars — not shown, not recorded)."
 
-# ── 3 ────────────────────────────────────────────────────────────────────
-stage "Install the Credentials File"
-say "systemd LoadCredential hands this to the service. Root-owned, mode 0600,"
-say "outside the Nix store, never an ExecStart argument."
-note "  $CRED_FILE"
-KEY_TMP="$(mktemp)"
-printf 'application-key=%s\n' "$APP_KEY" > "$KEY_TMP"
-[[ -n "$CLIENT_KEY" ]] && printf 'client-key=%s\n' "$CLIENT_KEY" >> "$KEY_TMP"
-sudo install -D -m 600 -o root -g root "$KEY_TMP" "$CRED_FILE"
-shred_file "$KEY_TMP"
-KEY_TMP=""
-if sudo test -f "$CRED_FILE"; then say "wrote $CRED_FILE"; else warn "write failed"; exit 1; fi
-write_env CREDENTIALS_FILE "$CRED_FILE"
+if [[ $DEPLOY == 1 ]]; then
+  # ── 3 ──────────────────────────────────────────────────────────────────
+  stage "Install the Credentials File"
+  say "systemd LoadCredential hands this to the service. Root-owned, mode 0600,"
+  say "outside the Nix store, never an ExecStart argument."
+  note "  $CRED_FILE"
+  KEY_TMP="$(mktemp)"
+  printf 'application-key=%s\n' "$APP_KEY" > "$KEY_TMP"
+  [[ -n "$CLIENT_KEY" ]] && printf 'client-key=%s\n' "$CLIENT_KEY" >> "$KEY_TMP"
+  sudo install -D -m 600 -o root -g root "$KEY_TMP" "$CRED_FILE"
+  shred_file "$KEY_TMP"
+  KEY_TMP=""
+  if sudo test -f "$CRED_FILE"; then say "wrote $CRED_FILE"; else warn "write failed"; exit 1; fi
+  write_env CREDENTIALS_FILE "$CRED_FILE"
 
-# ── 4 ────────────────────────────────────────────────────────────────────
-stage "Declare services.hue-grpc in your NixOS configuration"
-say "1. Add the flake input (flake.nix):"
-note '     hue-grpc.url = "github:malamoney/hue";'
-note "     # or a local checkout:  hue-grpc.url = \"git+file://$PWD\";"
-say ""
-say "2. Import the module and configure it (configuration.nix):"
-cat <<EOF
+  # ── 4 ──────────────────────────────────────────────────────────────────
+  stage "Declare services.hue-grpc in your NixOS configuration"
+  say "1. Add the flake input (flake.nix):"
+  note '     hue-grpc.url = "github:malamoney/hue";'
+  note "     # or a local checkout:  hue-grpc.url = \"git+file://$PWD\";"
+  say ""
+  say "2. Import the module and configure it (configuration.nix):"
+  cat <<EOF
 
     imports = [ hue-grpc.nixosModules.default ];
 
@@ -351,54 +407,83 @@ cat <<EOF
       };
     };
 EOF
-say ""
-say "Loopback listener on $GW, no firewall change, no TLS — the configuration"
-say "that needs no further decisions. (LAN clients: see the module's grpc.tls"
-say "and grpc.tokenFile options.)"
-confirm "Added that to your configuration and saved it?" \
-  || { warn "add it, then re-run — earlier stages will be skipped"; exit 1; }
-ask FLAKE_TARGET "System flake target for nixos-rebuild (e.g. /etc/nixos#$(hostname -s)):"
-[[ -n "$FLAKE_TARGET" ]] || { warn "need a flake target"; exit 1; }
-write_env FLAKE_TARGET "$FLAKE_TARGET"
+  say ""
+  say "Loopback listener on $GW, no firewall change, no TLS — the configuration"
+  say "that needs no further decisions. (LAN clients: see the module's grpc.tls"
+  say "and grpc.tokenFile options.)"
+  confirm "Added that to your configuration and saved it?" \
+    || { warn "add it, then re-run — earlier stages will be skipped"; exit 1; }
+  ask FLAKE_TARGET "System flake target for nixos-rebuild (e.g. /etc/nixos#${HOSTNAME:-hostname}):"
+  [[ -n "$FLAKE_TARGET" ]] || { warn "need a flake target"; exit 1; }
+  write_env FLAKE_TARGET "$FLAKE_TARGET"
 
-# ── 5 ────────────────────────────────────────────────────────────────────
-stage "Deploy"
-say "sudo nixos-rebuild switch --flake $FLAKE_TARGET"
-say "Heavy dependencies come prebuilt from cache.nixos.org; only the small"
-say "pure-Python derivation builds here."
-confirm "Run nixos-rebuild switch now?" || exit 1
-sudo nixos-rebuild switch --flake "$FLAKE_TARGET"
-sleep 2
-if systemctl is-active --quiet "$UNIT"; then
-  say "$UNIT is active"
-else
-  warn "$UNIT is not active"
-  systemctl --no-pager --full status "$UNIT" || true
-  exit 1
-fi
-# Type=exec marks the unit active the moment the process is exec'd, before the
-# asyncio server has bound the port. Wait for the listener itself.
-say "waiting for the gRPC listener on $GW ..."
-ready=""
-for _ in $(seq 1 60); do
-  if grpcurl -plaintext -d '{}' "$GW" grpc.health.v1.Health/Check >/dev/null 2>&1; then
-    ready=1; break
+  # ── 5 ──────────────────────────────────────────────────────────────────
+  stage "Deploy"
+  say "sudo nixos-rebuild switch --flake $FLAKE_TARGET"
+  say "Heavy dependencies come prebuilt from cache.nixos.org; only the small"
+  say "pure-Python derivation builds here."
+  confirm "Run nixos-rebuild switch now?" || exit 1
+  sudo nixos-rebuild switch --flake "$FLAKE_TARGET"
+  sleep 2
+  if systemctl is-active --quiet "$UNIT"; then
+    say "$UNIT is active"
+  else
+    warn "$UNIT is not active"
+    systemctl --no-pager --full status "$UNIT" || true
+    exit 1
   fi
-  sleep 1
-done
-if [[ -z "$ready" ]]; then
-  warn "no gRPC listener on $GW after 60s"
-  sudo journalctl -u "$UNIT" --no-pager -n 40 || true
-  exit 1
+  # Type=exec marks the unit active the moment the process is exec'd, before
+  # the asyncio server has bound the port. Wait for the listener itself.
+  say "waiting for the gRPC listener on $GW ..."
+  ready=""
+  for _ in $(seq 1 60); do
+    if grpcurl -plaintext -d '{}' "$GW" grpc.health.v1.Health/Check >/dev/null 2>&1; then
+      ready=1; break
+    fi
+    sleep 1
+  done
+  if [[ -z "$ready" ]]; then
+    warn "no gRPC listener on $GW after 60s"
+    sudo journalctl -u "$UNIT" --no-pager -n 40 || true
+    exit 1
+  fi
+  say "listener up"
+  say ""
+  say "systemd hardening (issue #15's set, checked live):"
+  sec="$(systemd-analyze security "$UNIT" 2>/dev/null | grep -i 'exposure level' || true)"
+  say "  ${sec:-(systemd-analyze security produced no summary line)}"
+  write_env SYSTEMD_SECURITY "${sec:-unknown}"
+else
+  # ── 5' ─────────────────────────────────────────────────────────────────
+  stage "Start the gateway"
+  say "No systemd here — the wizard runs the gateway itself. It reads the"
+  say "registry entry pairing just wrote and serves on $GW."
+  if [[ ! -x "$GWRESULT/bin/hue-grpc-server" ]]; then
+    say "building (heavy deps come from the binary cache) ..."
+    if ! nix build "$FLAKE#hue-grpc" -o "$GWRESULT" --print-build-logs; then
+      warn "the gateway did not build — see above."
+      exit 1
+    fi
+  fi
+  : > "$GWLOG"
+  "$GWRESULT/bin/hue-grpc-server" > "$GWLOG" 2>&1 &
+  GWPID=$!
+  say "waiting for the gRPC listener on $GW ..."
+  ready=""
+  for _ in $(seq 1 30); do
+    if grpcurl -plaintext -d '{}' "$GW" grpc.health.v1.Health/Check >/dev/null 2>&1; then
+      ready=1; break
+    fi
+    if ! kill -0 "$GWPID" 2>/dev/null; then
+      warn "the gateway exited during startup:"; sed 's/^/    /' "$GWLOG"; exit 1
+    fi
+    sleep 1
+  done
+  [[ -n "$ready" ]] || { warn "no listener on $GW after 30s"; tail -n 40 "$GWLOG" | sed 's/^/    /'; exit 1; }
+  say "listener up (pid $GWPID, log $GWLOG)"
 fi
-say "listener up"
-say ""
-say "systemd hardening (issue #15's set, checked live):"
-sec="$(systemd-analyze security "$UNIT" 2>/dev/null | grep -i 'exposure level' || true)"
-say "  ${sec:-(systemd-analyze security produced no summary line)}"
-write_env SYSTEMD_SECURITY "${sec:-unknown}"
 
-# ── 6 ────────────────────────────────────────────────────────────────────
+# ── smoke: list + read ──────────────────────────────────────────────────
 stage "Smoke: list the lights, read the one to test"
 grpcurl -plaintext -d '{}' "$GW" hue.v1.LightingService/ListLights \
   > ./issue-16-lights-inventory.json
@@ -441,7 +526,7 @@ write_env BASELINE_LIGHT_ID  "$MUTATE_LIGHT_ID"
 write_env BASELINE_ON        "$WAS_ON"
 write_env LIGHT_STATE_BEFORE "on=$WAS_ON brightness=${WAS_BRI:-n/a}"
 
-# ── 7 ────────────────────────────────────────────────────────────────────
+# ── smoke: change + restore ─────────────────────────────────────────────
 stage "Smoke: change the light, then restore it"
 if [[ "$WAS_ON" == "true" ]]; then
   cmd='{"on":{"on":false}}'; human="OFF"
@@ -469,7 +554,7 @@ else
   write_env WRITE_TEST "change $human $seen; restore MISMATCH on=$now_on (expected $WAS_ON)"
 fi
 
-# ── 8 ────────────────────────────────────────────────────────────────────
+# ── smoke: event stream ─────────────────────────────────────────────────
 stage "Smoke: event stream"
 : > "$SUB"
 grpcurl -plaintext -d "{\"resource_ids\":[\"$MUTATE_LIGHT_ID\"]}" \
@@ -511,50 +596,76 @@ else
   fi
 fi
 
-# ── 9 ────────────────────────────────────────────────────────────────────
+# ── smoke: forced disconnect ────────────────────────────────────────────
 stage "Smoke: force a disconnect — expect a gap, then a resync"
-say "The subscription is still open. Now cut the bridge off the network:"
-step "unplug its Ethernet cable (or its power) for ~15 seconds,"
-step "then reconnect it."
-pause "Enter the moment you've plugged it back in."
-say "Waiting up to 90s for the gateway to reconnect and announce the gap ..."
-for _ in $(seq 1 45); do
-  [[ "$(count_in "$SUB" 'CAUSE_RECONNECTED')" != 0 ]] && break
-  sleep 2
-done
-if [[ "$(count_in "$SUB" 'CAUSE_RECONNECTED')" != 0 ]]; then
-  say "gap announced (this is the POSSIBLE_GAP the issue asks for):"
-  grep -A4 'CAUSE_RECONNECTED' "$SUB" | tail -n 12 | sed 's/^/    /'
-  sleep 5
-  resync="$(awk '/CAUSE_RECONNECTED/{f=1} f&&/"change"/{c++} END{print c+0}' "$SUB")"
-  say "synthetic change events emitted after the gap: $resync"
-  say "(resync re-reads every light and emits one change per difference it finds)"
-  write_env DISCONNECT_TEST "CAUSE_RECONNECTED seen; post-gap change events=$resync"
+say "The subscription is still open. The event stream has no read timeout by"
+say "design, so a silent connection is not a dead one: pulling the network"
+say "cable leaves an idle socket the gateway correctly keeps holding. Only a"
+say "connection that actually ends or errors triggers a reconnect."
+say ""
+say "Power-cycle the bridge — pull its POWER for ~20 seconds, then plug it"
+say "back in. (Severing the connection any other way — ss -K, firewall rules,"
+say "docker network — does not work from inside a container.)"
+warn "this drops every light on the bridge for the ~1-2 minutes it reboots."
+if ! confirm "Power-cycle the bridge now?"; then
+  say "Skipped. This path is covered by checks.integration-vm, which boots the"
+  say "gateway unit against a bridge that goes away and comes back and asserts"
+  say "the gap and resync."
+  write_env DISCONNECT_TEST "skipped — see checks.integration-vm"
 else
-  warn "no gap seen — the outage may have been too brief to notice"
-  tail -n 20 "$SUB" | sed 's/^/    /' || true
-  write_env DISCONNECT_TEST "NOT observed"
+  pause "Enter once the bridge is powered back on (its light need not be steady yet)."
+  say "Waiting up to 4 min for the bridge to boot and the gateway to reconnect ..."
+  for _ in $(seq 1 120); do
+    [[ "$(count_in "$SUB" 'CAUSE_RECONNECTED')" != 0 ]] && break
+    sleep 2
+  done
+  if [[ "$(count_in "$SUB" 'CAUSE_RECONNECTED')" != 0 ]]; then
+    say "gap announced (the POSSIBLE_GAP the issue asks for):"
+    grep -A4 'CAUSE_RECONNECTED' "$SUB" | tail -n 12 | sed 's/^/    /'
+    sleep 5
+    resync="$(awk '/CAUSE_RECONNECTED/{f=1} f&&/"change"/{c++} END{print c+0}' "$SUB")"
+    say "synthetic change events emitted after the gap: $resync"
+    say "(resync re-reads every light and emits one change per difference)"
+    write_env DISCONNECT_TEST "CAUSE_RECONNECTED seen; post-gap change events=$resync"
+  else
+    warn "no gap seen in 4 min — the bridge may still be booting, or the"
+    warn "connection never actually dropped. checks.integration-vm covers this path."
+    tail -n 20 "$SUB" | sed 's/^/    /' || true
+    write_env DISCONNECT_TEST "NOT observed (covered by checks.integration-vm)"
+  fi
 fi
 kill "$SUBPID" 2>/dev/null || true
 SUBPID=""
 
-# ── 10 ───────────────────────────────────────────────────────────────────
-stage "Smoke: confirm no secrets in the journal"
-sudo journalctl -u "$UNIT" --no-pager | tee "$JOURNAL" >/dev/null
-app_hits="$(count_in "$JOURNAL" "$APP_KEY")"
-cli_hits=0
-[[ -n "$CLIENT_KEY" ]] && cli_hits="$(count_in "$JOURNAL" "$CLIENT_KEY")"
-if [[ "$app_hits" == 0 && "$cli_hits" == 0 ]]; then
-  say "clean — neither the Application Key nor the Client Key appears in the journal"
-  write_env JOURNAL_SECRET_SCAN "clean"
+# ── smoke: secret scan ──────────────────────────────────────────────────
+if [[ $DEPLOY == 1 ]]; then
+  stage "Smoke: confirm no secrets in the journal"
+  sudo journalctl -u "$UNIT" --no-pager | tee "$JOURNAL" >/dev/null
+  scanfile="$JOURNAL"; scanwhat="journal"
 else
-  warn "SECRET MATERIAL IN THE JOURNAL — app key x$app_hits, client key x$cli_hits"
-  write_env JOURNAL_SECRET_SCAN "LEAK app=$app_hits client=$cli_hits"
+  stage "Smoke: confirm no secrets in the gateway log"
+  scanfile="$GWLOG"; scanwhat="gateway log"
 fi
-rm -f "$JOURNAL"
+app_hits="$(count_in "$scanfile" "$APP_KEY")"
+cli_hits=0
+[[ -n "$CLIENT_KEY" ]] && cli_hits="$(count_in "$scanfile" "$CLIENT_KEY")"
+if [[ "$app_hits" == 0 && "$cli_hits" == 0 ]]; then
+  say "clean — neither the Application Key nor the Client Key appears in the $scanwhat"
+  write_env SECRET_SCAN "clean ($scanwhat)"
+else
+  warn "SECRET MATERIAL IN THE ${scanwhat^^} — app key x$app_hits, client key x$cli_hits"
+  write_env SECRET_SCAN "LEAK app=$app_hits client=$cli_hits ($scanwhat)"
+fi
+if [[ $DEPLOY == 1 ]]; then rm -f "$JOURNAL"; fi
 write_env SMOKE_FINISHED_AT "$(date -Is)"
 
-note "The registry at $REG still holds the same secrets as the credentials"
-note "file. Keep it for re-runs, or shred it now: shred -u \"$REG\""
+if [[ $DEPLOY == 0 && -n "$GWPID" ]]; then
+  kill "$GWPID" 2>/dev/null || true
+  GWPID=""
+  say "stopped the gateway."
+fi
+
+note "The registry at $REG holds the bridge secrets. Keep it for re-runs, or"
+note "shred it now: shred -u \"$REG\""
 
 finish
