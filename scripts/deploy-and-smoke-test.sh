@@ -331,15 +331,27 @@ if [[ -f "$REG" ]] && jq -e '.bridge.application_key' "$REG" >/dev/null 2>&1; th
 else
   warn "This mints a REAL Application Key and only works within ~30 seconds of"
   warn "pressing the bridge's link button."
+  # Build the gateway before the button press, not inside the retry loop: a
+  # build failure is not a pairing failure, and 30 seconds is not the time to
+  # discover the binary won't compile.
+  say "building the gateway (cached after the first run) ..."
+  if ! nix build "$FLAKE#hue-grpc" -o "$GWRESULT" --print-build-logs; then
+    warn "the gateway did not build — fix that above, then re-run."
+    warn "a bare 'g++ ... exit code 1' with no diagnostic is usually the build"
+    warn "host running out of memory on grpcio-tools; give it more RAM + swap."
+    exit 1
+  fi
+  hue_cli="$GWRESULT/bin/hue-grpc-server"
   pause "Walk to the bridge, press the round link button on top, come back, Enter."
   paired=""
   for attempt in 1 2 3; do
     say "pairing (attempt $attempt/3) ..."
-    if nix run "$FLAKE" -- pair \
-         --bridge-address "$HUE_BRIDGE_ADDRESS" --bridge-id "$HUE_BRIDGE_ID"; then
-      paired=1; break
+    if "$hue_cli" pair \
+      --bridge-address "$HUE_BRIDGE_ADDRESS" --bridge-id "$HUE_BRIDGE_ID"; then
+      paired=1
+      break
     fi
-    warn "that did not take — press the link button again"
+    warn "that did not take — press the link button again, within 30s of Enter"
     pause "Enter to retry"
   done
   [[ -n "$paired" ]] || { warn "pairing did not succeed"; exit 1; }
@@ -436,8 +448,13 @@ else
   stage "Start the gateway"
   say "No systemd here — the wizard runs the gateway itself. It reads the"
   say "registry entry pairing just wrote and serves on $GW."
-  say "building (heavy deps come from the binary cache) ..."
-  nix build "$FLAKE" -o "$GWRESULT" --print-build-logs
+  if [[ ! -x "$GWRESULT/bin/hue-grpc-server" ]]; then
+    say "building (heavy deps come from the binary cache) ..."
+    if ! nix build "$FLAKE#hue-grpc" -o "$GWRESULT" --print-build-logs; then
+      warn "the gateway did not build — see above."
+      exit 1
+    fi
+  fi
   : > "$GWLOG"
   "$GWRESULT/bin/hue-grpc-server" > "$GWLOG" 2>&1 &
   GWPID=$!
