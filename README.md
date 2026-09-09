@@ -278,13 +278,16 @@ and confirming the Application Key never reaches the journal.
 
 The same walk against real hardware — pair, install the Credentials File,
 `nixos-rebuild switch`, then read, change and restore one chosen light, prove
-the event stream and its gap-then-resync, and grep the journal for the key —
+an event arrives and that a bridge power-cycle produces a gap and resync, and
+grep the journal for the key —
 is [`scripts/deploy-and-smoke-test.sh`](./scripts/deploy-and-smoke-test.sh),
 a wizard run on the NixOS host that stops at every mutation and leaves a
 record of what the Bridge was and what it did. `--skip-deploy` drops the
 systemd half — credentials file, module config, `nixos-rebuild`, journal scan
 — and runs the gateway straight from `nix build`, so the pair-and-smoke half
-works on any Linux host that can reach the Bridge.
+works on any Linux host that can reach the Bridge. The gap-and-resync step
+needs a real interruption the gateway can see — a bridge reboot, not a pulled
+cable — and is otherwise left to `checks.integration-vm`.
 
 ## State
 

@@ -598,27 +598,41 @@ fi
 
 # ── smoke: forced disconnect ────────────────────────────────────────────
 stage "Smoke: force a disconnect — expect a gap, then a resync"
-say "The subscription is still open. Now cut the bridge off the network:"
-step "unplug its Ethernet cable (or its power) for ~15 seconds,"
-step "then reconnect it."
-pause "Enter the moment you've plugged it back in."
-say "Waiting up to 90s for the gateway to reconnect and announce the gap ..."
-for _ in $(seq 1 45); do
-  [[ "$(count_in "$SUB" 'CAUSE_RECONNECTED')" != 0 ]] && break
-  sleep 2
-done
-if [[ "$(count_in "$SUB" 'CAUSE_RECONNECTED')" != 0 ]]; then
-  say "gap announced (this is the POSSIBLE_GAP the issue asks for):"
-  grep -A4 'CAUSE_RECONNECTED' "$SUB" | tail -n 12 | sed 's/^/    /'
-  sleep 5
-  resync="$(awk '/CAUSE_RECONNECTED/{f=1} f&&/"change"/{c++} END{print c+0}' "$SUB")"
-  say "synthetic change events emitted after the gap: $resync"
-  say "(resync re-reads every light and emits one change per difference it finds)"
-  write_env DISCONNECT_TEST "CAUSE_RECONNECTED seen; post-gap change events=$resync"
+say "The subscription is still open. The event stream has no read timeout by"
+say "design, so a silent connection is not a dead one: pulling the network"
+say "cable leaves an idle socket the gateway correctly keeps holding. Only a"
+say "connection that actually ends or errors triggers a reconnect."
+say ""
+say "Power-cycle the bridge — pull its POWER for ~20 seconds, then plug it"
+say "back in. (Severing the connection any other way — ss -K, firewall rules,"
+say "docker network — does not work from inside a container.)"
+warn "this drops every light on the bridge for the ~1-2 minutes it reboots."
+if ! confirm "Power-cycle the bridge now?"; then
+  say "Skipped. This path is covered by checks.integration-vm, which boots the"
+  say "gateway unit against a bridge that goes away and comes back and asserts"
+  say "the gap and resync."
+  write_env DISCONNECT_TEST "skipped — see checks.integration-vm"
 else
-  warn "no gap seen — the outage may have been too brief to notice"
-  tail -n 20 "$SUB" | sed 's/^/    /' || true
-  write_env DISCONNECT_TEST "NOT observed"
+  pause "Enter once the bridge is powered back on (its light need not be steady yet)."
+  say "Waiting up to 4 min for the bridge to boot and the gateway to reconnect ..."
+  for _ in $(seq 1 120); do
+    [[ "$(count_in "$SUB" 'CAUSE_RECONNECTED')" != 0 ]] && break
+    sleep 2
+  done
+  if [[ "$(count_in "$SUB" 'CAUSE_RECONNECTED')" != 0 ]]; then
+    say "gap announced (the POSSIBLE_GAP the issue asks for):"
+    grep -A4 'CAUSE_RECONNECTED' "$SUB" | tail -n 12 | sed 's/^/    /'
+    sleep 5
+    resync="$(awk '/CAUSE_RECONNECTED/{f=1} f&&/"change"/{c++} END{print c+0}' "$SUB")"
+    say "synthetic change events emitted after the gap: $resync"
+    say "(resync re-reads every light and emits one change per difference)"
+    write_env DISCONNECT_TEST "CAUSE_RECONNECTED seen; post-gap change events=$resync"
+  else
+    warn "no gap seen in 4 min — the bridge may still be booting, or the"
+    warn "connection never actually dropped. checks.integration-vm covers this path."
+    tail -n 20 "$SUB" | sed 's/^/    /' || true
+    write_env DISCONNECT_TEST "NOT observed (covered by checks.integration-vm)"
+  fi
 fi
 kill "$SUBPID" 2>/dev/null || true
 SUBPID=""
