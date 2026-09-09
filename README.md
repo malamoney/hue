@@ -281,7 +281,10 @@ The same walk against real hardware — pair, install the Credentials File,
 the event stream and its gap-then-resync, and grep the journal for the key —
 is [`scripts/deploy-and-smoke-test.sh`](./scripts/deploy-and-smoke-test.sh),
 a wizard run on the NixOS host that stops at every mutation and leaves a
-record of what the Bridge was and what it did.
+record of what the Bridge was and what it did. `--skip-deploy` drops the
+systemd half — credentials file, module config, `nixos-rebuild`, journal scan
+— and runs the gateway straight from `nix build`, so the pair-and-smoke half
+works on any Linux host that can reach the Bridge.
 
 ## State
 
