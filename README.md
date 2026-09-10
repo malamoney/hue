@@ -311,10 +311,14 @@ was derived empirically against that booted VM: each directive is one the
 Gateway keeps working without, and the VM test runs `systemd-analyze
 security` on the live unit so the score cannot regress unnoticed.
 
-`checks.integration-vm` (Linux only) is that booted VM: two nodes, one running
-the module's unit and one running a fake Bridge, exercising a read, a
-mutation, an event stream, a restart, and a bridge interruption end to end,
-and confirming the Application Key never reaches the journal.
+`checks.integration-vm` (Linux only) is that booted VM: three nodes — a fake
+Bridge, a `gateway` running the module's unit from a static `bridge.*` and a
+Credentials File, and a `paired` node with no static Bridge that runs
+`hue-grpc-server pair` in `ExecStartPre` and then serves from the
+`registry.json` it wrote. They exercise a read, a mutation, an event stream,
+a restart that reloads persisted state, and a bridge interruption that
+produces a `CAUSE_RECONNECTED` gap — and confirm the Application Key reaches
+neither node's journal nor an `ExecStart` argument.
 
 The same walk against real hardware — pair, install the Credentials File,
 `nixos-rebuild switch`, then read, change and restore one chosen light, prove
