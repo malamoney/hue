@@ -9,14 +9,19 @@ that only a button press can mint. Reading needs the key and nothing else::
 The key is taken from `HUE_APPLICATION_KEY`, or from the Registry if
 `hue-grpc-server pair` has already written one there.
 
-The last test changes a light, so it is gated separately::
+Two tests change a light, so they are gated separately::
 
-    HUE_CHANGE_LIGHTS=1 pytest tests/smoke -k leaves_the_power_alone
+    HUE_CHANGE_LIGHTS=1 pytest tests/smoke -k "power_alone or colour_and"
 
-It sets a light's brightness to the brightness it already has, which is the
-smallest change that still proves the write path, and then re-reads it to
-show that the fields the command left out came through untouched. Nothing
-visible should happen.
+`test_setting_brightness_leaves_the_power_alone` sets a light's brightness to
+the brightness it already has, which is the smallest change that still proves
+the write path, and then re-reads it to show that the fields the command left
+out came through untouched. Nothing visible should happen.
+
+`test_the_bridge_rejects_colour_and_colour_temperature_together` checks the
+premise behind ``proto/manifest.toml``'s ``LightPut`` ``colour`` oneof and
+``docs/adr/0006`` (issue #35). Both fields are sent at the light's current
+values, so a Bridge that wrongly accepts the request changes nothing visible.
 """
 
 from __future__ import annotations
@@ -31,8 +36,8 @@ import pytest
 
 from hue.v1 import lighting_pb2, lighting_service_pb2
 from hue.v1 import lighting_service_pb2_grpc as lighting_grpc
-from hue_grpc.hue.lights import Lights
-from hue_grpc.hue.transport import HueTransport
+from hue_grpc.hue.lights import LIGHT_COLLECTION, Lights
+from hue_grpc.hue.transport import BridgeResponseError, HueTransport
 from hue_grpc.lighting.service import hosted_lighting_service
 from hue_grpc.registry import Registry, default_registry_path
 from hue_grpc.serving.config import GatewayConfig
@@ -143,6 +148,60 @@ def test_setting_brightness_leaves_the_power_alone() -> None:
         assert after.on.on == before.on.on
         assert after.dimming.brightness == pytest.approx(
             before.dimming.brightness, abs=1.0
+        )
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.skipif(
+    not CHANGES_ALLOWED, reason="set HUE_CHANGE_LIGHTS=1 to write to real lights"
+)
+def test_the_bridge_rejects_colour_and_colour_temperature_together() -> None:
+    """The premise behind manifest.toml's LightPut `colour` oneof (#35, ADR 0006).
+
+    The Gateway makes this request unrepresentable, so it goes straight at the
+    Bridge over the raw transport. Both values are the light's current ones, so
+    a Bridge that accepts the request changes nothing visible -- but the test
+    still fails, because the oneof would then be wrong.
+    """
+
+    async def scenario() -> None:
+        transport = HueTransport(
+            bridge_id=BRIDGE_ID, address=ADDRESS, application_key=KEY
+        )
+        async with transport:
+            listed = await transport.request("GET", LIGHT_COLLECTION)
+            colour_lights = [
+                light
+                for light in listed["data"]
+                if "color" in light and "color_temperature" in light
+            ]
+            if not colour_lights:
+                pytest.skip("no colour light on this bridge")
+            light = colour_lights[0]
+
+            # The values it already reports. `mirek` reads back null when the
+            # light is not in colour-temperature mode, so fall back to a
+            # mid-range value that is still a no-op for a light already there.
+            mirek = light["color_temperature"]["mirek"] or 366
+            body = {
+                "color": {"xy": light["color"]["xy"]},
+                "color_temperature": {"mirek": mirek},
+            }
+
+            try:
+                envelope = await transport.request(
+                    "PUT", f"{LIGHT_COLLECTION}/{light['id']}", json=body
+                )
+            except BridgeResponseError:
+                rejected = True
+            else:
+                rejected = bool(envelope.get("errors"))
+
+        assert rejected, (
+            "the Bridge accepted color and color_temperature in one PUT; "
+            "proto/manifest.toml's LightPut `colour` oneof is wrong and should "
+            "become two optional fields with runtime validation (see ADR 0006)"
         )
 
     asyncio.run(scenario())

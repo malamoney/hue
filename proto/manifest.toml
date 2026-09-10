@@ -23,12 +23,15 @@ roots = ["ResourceIdentifier", "Error"]
 [files."hue/v1/lighting.proto"]
 roots = ["LightGet", "LightPut"]
 
-# Hue rejects setting colour and colour temperature in the same request, so
-# modelling them as a oneof makes that request unrepresentable rather than
-# something the gateway has to validate and reject.
+# Hue is documented to reject setting colour and colour temperature in the
+# same request, so modelling them as a oneof makes that request
+# unrepresentable rather than something the gateway has to validate and
+# reject.
 #
-# UNCONFIRMED against real hardware: verify in #16 before anything depends on
-# it. If Hue does accept both, this line is what to remove.
+# UNCONFIRMED against real hardware — see docs/adr/0006 and #35. The check
+# belongs to #35, not #16, which closed without exercising it. If the Bridge
+# turns out to accept both, this becomes two optional fields with runtime
+# validation and ADR 0006 is superseded.
 [files."hue/v1/lighting.proto".oneofs.LightPut]
 colour = ["color", "color_temperature"]
 
