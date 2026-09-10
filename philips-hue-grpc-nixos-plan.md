@@ -325,7 +325,7 @@ sequenceDiagram
 
 ### 7.2 Retries
 
-- Retry a Safe Read only for clearly transient connection failures — up to three times, jittered backoff bounded well inside the caller's deadline.
+- Retry a Safe Read only for clearly transient connection failures — three attempts total, so at most two retries, with a full-jitter backoff bounded well inside the caller's deadline.
 - Never automatically retry a Mutation: a `PUT` that failed after the Bridge acted cannot be told apart from one that failed before.
 - A Bridge that answered — a 429, a 503 — is not retried either; that is the client's decision.
 - Reconnect the event stream on its own schedule, independent of unary RPC retry behavior.
@@ -356,14 +356,21 @@ message Error {
 
 `Error` is generated from the spec, which gives it only a `description`; a Bridge that reports more reaches clients with less. `updated` and `errors` can both be non-empty in one successful call — a Bridge that made one change and refused another reports both, so Hue's own errors travel in the `MutationResponse`, not as a gRPC status.
 
-Wrapper-level mapping, for the case where the Bridge could not be reached, would not answer, or refused the exchange outright — the gRPC status carries what the Bridge said along with it:
+Wrapper-level mapping for everything that is not a normal Mutation. Local pre-flight failures are decided before the Gateway touches the Bridge; the rest are a round trip that failed, and there the gRPC status carries what the Bridge said along with it.
+
+Local, before the Bridge is contacted:
 
 | Condition | gRPC status |
 |---|---|
 | Invalid Command — out of range, or sets nothing | `INVALID_ARGUMENT` |
-| Unknown light id | `NOT_FOUND` |
 | Missing or invalid Gateway Token | `UNAUTHENTICATED` |
 | Not yet paired (no Registry Entry) | `FAILED_PRECONDITION` |
+
+After a round trip to the Bridge:
+
+| Condition | gRPC status |
+|---|---|
+| Unknown light id | `NOT_FOUND` |
 | Bridge rejects the Application Key | `FAILED_PRECONDITION` |
 | Bridge unreachable | `UNAVAILABLE` |
 | Bridge went quiet | `DEADLINE_EXCEEDED` |
@@ -393,7 +400,10 @@ stateDiagram-v2
     Online --> AddressChanged: operator edits the address / re-runs pair
     AddressChanged --> Online: TLS identity check confirms the same Bridge
     Paired --> KeyRejected: Bridge rejects the Application Key
+    KeyRejected --> Unpaired: operator removes registry.json, then re-pairs
 ```
+
+There is no automatic recovery from a rejected Application Key: `pair` refuses to run while a Registry Entry exists, so an operator whose key was removed in the Hue app must delete `registry.json` (or the `bridge.credentialsFile`) by hand and pair again. This is deliberate — a Gateway that re-paired on its own would mint a second key and strand the first.
 
 ### 9.1 Bridge address policy
 
@@ -509,14 +519,14 @@ Pin `nixpkgs` through `flake.lock` to make the toolchain and dependency graph re
 
 Use `python3Packages.buildPythonApplication` with a `pyproject.toml` build. Do not run `pip install`, create a virtual environment, or download dependencies during service startup.
 
-Key dependencies:
+Runtime dependencies (`pyproject.toml`):
 
-- `grpcio` and `grpcio-tools`.
+- `grpcio`.
+- `grpcio-health-checking` and `grpcio-reflection` — the standard health and reflection services the Listener serves.
 - `protobuf`.
-- An async HTTP implementation (`httpx` or `aiohttp`).
-- `pytest`, `ruff`, `mypy` in the dev shell and check environments only.
+- `httpx` — the async HTTP client.
 
-No `zeroconf` — there is no discovery. Because `grpcio` includes compiled components, it comes from Nix rather than a precompiled wheel.
+`grpcio-tools`, `pytest`, `ruff`, and `mypy` are dev-shell and check-environment only. No `zeroconf` — there is no discovery. Because `grpcio` includes compiled components, it comes from Nix rather than a precompiled wheel.
 
 ### 11.3 Protobuf generation
 
@@ -838,15 +848,20 @@ For `LightGet` and `LightPut`, cover:
 
 ### 15.5 NixOS VM test
 
-`checks.integration-vm` (Linux only) boots two nodes — one running the module's unit, one running the fake Bridge, which presents a leaf certificate of exactly the real shape under a CA it mints itself so the whole TLS verification path runs for real. It:
+`checks.integration-vm` (Linux only) boots three nodes:
 
-1. Starts `hue-grpc.service` with a Credentials File injected through `LoadCredential`.
-2. Verifies systemd service health and `systemd-analyze security` score.
-3. Calls the standard gRPC health endpoint.
-4. Exercises one read, one Mutation, and one event stream.
-5. Restarts the service and verifies the Registry survived.
-6. Confirms the Gateway recovers after a Bridge interruption, producing a `Gap` and Resync.
-7. Greps the journal to confirm the Application Key is absent.
+- `bridge` — the fake Hue Bridge, presenting a leaf certificate of exactly the real shape under a CA it mints itself, so the whole TLS verification path runs for real.
+- `gateway` — the module's unit with a static `bridge.*` and a Credentials File injected through `LoadCredential`.
+- `paired` — the module's unit with no static Bridge, which runs the real `hue-grpc-server pair` subcommand against `bridge` in `ExecStartPre` and then reloads from the persisted `registry.json`.
+
+The script:
+
+1. Starts `hue-grpc.service` on `gateway` and verifies systemd health and the `systemd-analyze security` score.
+2. Calls the standard gRPC health endpoint.
+3. Exercises one read, one Mutation, and one event stream against `gateway`.
+4. On `paired`: pairs against `bridge`, then restarts the service and confirms the Registry survived and a lighting call still works.
+5. Confirms `gateway` recovers after a Bridge interruption, producing a `Gap` and Resync.
+6. Greps the journal to confirm the Application Key is absent.
 
 ### 15.6 Real-Bridge smoke tests
 
