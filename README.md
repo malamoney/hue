@@ -82,14 +82,54 @@ hue-grpc-server pair \
     --bridge-id ECB5FAFFFE334703
 ```
 
-That writes the registry entry the server reads on its next start. Pairing
-again while an entry exists is refused: it would mint a second key and leave
-the first in the bridge's app list, where only a person with the Hue app can
-remove it. Following a bridge to a new address needs no new key at all.
+That writes `registry.json` into the state directory — `$STATE_DIRECTORY`
+under systemd, otherwise `$XDG_STATE_HOME/hue-grpc` (usually
+`~/.local/state/hue-grpc`) — holding the bridge's address, id, and the
+secrets it minted. A gateway started against that same directory reads it and
+serves. Pairing again while an entry exists is refused: it would mint a
+second key and strand the first in the bridge's app list, where only a person
+with the Hue app can remove it. Following a bridge to a new address needs no
+new key at all.
 
 Until an entry exists the gateway still starts, still answers health and
 reflection, and answers every lighting call with `FAILED_PRECONDITION` saying
 to run the above.
+
+### Pairing for the systemd unit
+
+The unit runs as a `DynamicUser` with its state directory at
+`/var/lib/hue-grpc`, so pairing directly into it is awkward. The path that
+works — and the one
+[`scripts/deploy-and-smoke-test.sh`](./scripts/deploy-and-smoke-test.sh)
+automates — pairs once anywhere that can reach the bridge, then hands the
+service the keys through a Credentials File:
+
+1. Run `hue-grpc-server pair …` as above (a laptop on the bridge's network is
+   fine). It writes `registry.json` under `~/.local/state/hue-grpc`.
+2. Copy the secrets out of that file into `key=value` lines:
+
+   ```sh
+   { printf 'application-key=%s\n' "$(jq -r '.bridge.application_key' registry.json)"
+     ck=$(jq -r '.bridge.client_key // empty' registry.json)
+     [ -n "$ck" ] && printf 'client-key=%s\n' "$ck"
+   } | sudo install -D -m 600 -o root -g root /dev/stdin /etc/hue-grpc/credentials
+   ```
+
+3. Point the module at it (or use `sops-nix` / `agenix` / a file under
+   `/run/secrets` instead of `/etc/hue-grpc/credentials`):
+
+   ```nix
+   services.hue-grpc.bridge = {
+     address = "192.168.86.223";
+     id = "ECB5FAFFFE334703";
+     credentialsFile = "/etc/hue-grpc/credentials";
+   };
+   ```
+
+With `bridge.*` set the unit ignores `registry.json` entirely and loads the
+key through systemd `LoadCredential`. Rotating the key means rewriting that
+file and `systemctl restart hue-grpc.service`: the unit text is unchanged, so
+nothing restarts on its own.
 
 ## Running
 
