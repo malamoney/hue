@@ -82,14 +82,54 @@ hue-grpc-server pair \
     --bridge-id ECB5FAFFFE334703
 ```
 
-That writes the registry entry the server reads on its next start. Pairing
-again while an entry exists is refused: it would mint a second key and leave
-the first in the bridge's app list, where only a person with the Hue app can
-remove it. Following a bridge to a new address needs no new key at all.
+That writes `registry.json` into the state directory — `$STATE_DIRECTORY`
+under systemd, otherwise `$XDG_STATE_HOME/hue-grpc` (usually
+`~/.local/state/hue-grpc`) — holding the bridge's address, id, and the
+secrets it minted. A gateway started against that same directory reads it and
+serves. Pairing again while an entry exists is refused: it would mint a
+second key and strand the first in the bridge's app list, where only a person
+with the Hue app can remove it. Following a bridge to a new address needs no
+new key at all.
 
 Until an entry exists the gateway still starts, still answers health and
 reflection, and answers every lighting call with `FAILED_PRECONDITION` saying
 to run the above.
+
+### Pairing for the systemd unit
+
+The unit runs as a `DynamicUser` with its state directory at
+`/var/lib/hue-grpc`, so pairing directly into it is awkward. The path that
+works — and the one
+[`scripts/deploy-and-smoke-test.sh`](./scripts/deploy-and-smoke-test.sh)
+automates — pairs once anywhere that can reach the bridge, then hands the
+service the keys through a Credentials File:
+
+1. Run `hue-grpc-server pair …` as above (a laptop on the bridge's network is
+   fine). It writes `registry.json` under `~/.local/state/hue-grpc`.
+2. Copy the secrets out of that file into `key=value` lines:
+
+   ```sh
+   { printf 'application-key=%s\n' "$(jq -r '.bridge.application_key' registry.json)"
+     ck=$(jq -r '.bridge.client_key // empty' registry.json)
+     [ -n "$ck" ] && printf 'client-key=%s\n' "$ck"
+   } | sudo install -D -m 600 -o root -g root /dev/stdin /etc/hue-grpc/credentials
+   ```
+
+3. Point the module at it (or use `sops-nix` / `agenix` / a file under
+   `/run/secrets` instead of `/etc/hue-grpc/credentials`):
+
+   ```nix
+   services.hue-grpc.bridge = {
+     address = "192.168.86.223";
+     id = "ECB5FAFFFE334703";
+     credentialsFile = "/etc/hue-grpc/credentials";
+   };
+   ```
+
+With `bridge.*` set the unit ignores `registry.json` entirely and loads the
+key through systemd `LoadCredential`. Rotating the key means rewriting that
+file and `systemctl restart hue-grpc.service`: the unit text is unchanged, so
+nothing restarts on its own.
 
 ## Running
 
@@ -271,10 +311,14 @@ was derived empirically against that booted VM: each directive is one the
 Gateway keeps working without, and the VM test runs `systemd-analyze
 security` on the live unit so the score cannot regress unnoticed.
 
-`checks.integration-vm` (Linux only) is that booted VM: two nodes, one running
-the module's unit and one running a fake Bridge, exercising a read, a
-mutation, an event stream, a restart, and a bridge interruption end to end,
-and confirming the Application Key never reaches the journal.
+`checks.integration-vm` (Linux only) is that booted VM: three nodes — a fake
+Bridge, a `gateway` running the module's unit from a static `bridge.*` and a
+Credentials File, and a `paired` node with no static Bridge that runs
+`hue-grpc-server pair` in `ExecStartPre` and then serves from the
+`registry.json` it wrote. They exercise a read, a mutation, an event stream,
+a restart that reloads persisted state, and a bridge interruption that
+produces a `CAUSE_RECONNECTED` gap — and confirm the Application Key reaches
+neither node's journal nor an `ExecStart` argument.
 
 The same walk against real hardware — pair, install the Credentials File,
 `nixos-rebuild switch`, then read, change and restore one chosen light, prove
