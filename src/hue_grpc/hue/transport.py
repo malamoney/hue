@@ -20,6 +20,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import socket
+import sys
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -33,13 +35,16 @@ from hue_grpc.logs import record_upstream_status
 
 __all__ = [
     "APPLICATION_KEY_HEADER",
+    "DEFAULT_KEEPALIVE",
     "DEFAULT_RETRY",
     "DEFAULT_TIMEOUTS",
+    "TCP_KEEPIDLE",
     "BridgeResponseError",
     "BridgeTimeoutError",
     "BridgeUnreachableError",
     "HueTransport",
     "HueTransportError",
+    "Keepalive",
     "MalformedResponseError",
     "Timeouts",
     "redact_headers",
@@ -113,6 +118,51 @@ class Timeouts:
 
 DEFAULT_TIMEOUTS = Timeouts()
 
+#: The idle-time option, under whichever name this platform gives it: Linux
+#: says `TCP_KEEPIDLE`, macOS says `TCP_KEEPALIVE`. The package targets the
+#: former and the unit tests run on the latter.
+if sys.platform == "darwin":
+    TCP_KEEPIDLE: int = socket.TCP_KEEPALIVE
+else:
+    TCP_KEEPIDLE = socket.TCP_KEEPIDLE
+
+
+@dataclass(frozen=True)
+class Keepalive:
+    """How soon a connection to the Bridge is probed, and how soon given up on.
+
+    The event stream is the reason this exists. Nothing bounds how long the
+    Bridge may go without saying anything (`Timeouts.stream_read`), and an
+    SSE client never writes, so a Bridge that vanished without a FIN — it
+    rebooted for a firmware update, somebody unplugged it — leaves a socket
+    that reads as open for as long as this process lives. Nothing above the
+    transport ever hears that the stream is gone, so the reconnect that ADR
+    0005 hangs a Gap and a Resync on is never triggered (issue #38). The
+    kernel's own keepalive would notice, two hours later, if anything turned
+    it on; this turns it on and makes it prompt.
+
+    The schedule is in seconds. A dead peer is found within roughly
+    `idle + interval * count`: two minutes on the defaults, inside the few
+    minutes the Bridge buffers events (ADR 0005), so the reconnect that
+    follows still has a Bridge worth Resyncing against.
+    """
+
+    idle: int = 60
+    interval: int = 15
+    count: int = 4
+
+    def socket_options(self) -> list[tuple[int, int, int]]:
+        """What to `setsockopt` on every connection the transport opens."""
+        return [
+            (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),
+            (socket.IPPROTO_TCP, TCP_KEEPIDLE, self.idle),
+            (socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, self.interval),
+            (socket.IPPROTO_TCP, socket.TCP_KEEPCNT, self.count),
+        ]
+
+
+DEFAULT_KEEPALIVE = Keepalive()
+
 DEFAULT_RETRY = Retry()
 
 
@@ -126,6 +176,7 @@ class HueTransport:
         address: str,
         application_key: str | None = None,
         timeouts: Timeouts = DEFAULT_TIMEOUTS,
+        keepalive: Keepalive = DEFAULT_KEEPALIVE,
         retry: Retry = DEFAULT_RETRY,
         ca_pem: str | None = None,
     ) -> None:
@@ -135,7 +186,13 @@ class HueTransport:
         self._retry = retry
         self._client = httpx.AsyncClient(
             base_url=f"https://{address}",
-            verify=bridge_ssl_context(bridge_id, ca_pem=ca_pem),
+            # The options ride on the transport rather than the client
+            # because that is where httpx accepts them; so does `verify`,
+            # once a transport is supplied by hand.
+            transport=httpx.AsyncHTTPTransport(
+                verify=bridge_ssl_context(bridge_id, ca_pem=ca_pem),
+                socket_options=keepalive.socket_options(),
+            ),
             timeout=timeouts.httpx_timeout(read=timeouts.read),
         )
 
@@ -188,7 +245,9 @@ class HueTransport:
 
         The body is left unread: the caller consumes it as it arrives. Only
         `stream_read` bounds the wait between chunks, so a quiet Bridge is not
-        mistaken for a wedged one.
+        mistaken for a wedged one; a Bridge that is gone rather than quiet is
+        caught by `Keepalive` on the socket underneath, and surfaces out of
+        the iteration as a lost connection.
 
         Never retried, whatever `retry` says. Reconnecting an event stream
         opens a Gap, and a reconnection that happened underneath its reader
