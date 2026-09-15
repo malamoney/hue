@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import socket
 from typing import Any
 
 import pytest
@@ -19,10 +20,12 @@ from hue_grpc.hue.retry import Retry
 from hue_grpc.hue.tls import BridgeIdentityError
 from hue_grpc.hue.transport import (
     APPLICATION_KEY_HEADER,
+    TCP_KEEPIDLE,
     BridgeResponseError,
     BridgeTimeoutError,
     BridgeUnreachableError,
     HueTransport,
+    Keepalive,
     MalformedResponseError,
     Timeouts,
 )
@@ -471,6 +474,45 @@ def test_a_bridge_that_went_quiet_is_not_asked_again(
                     await transport.request("GET", "/clip/v2/resource/light")
 
             assert len(bridge.requests) == 1
+
+    run(scenario())
+
+
+def test_the_event_stream_rides_a_socket_that_probes_for_a_dead_bridge(
+    bridge_certs: BridgeCerts,
+) -> None:
+    """A Bridge that vanishes mid-stream without a FIN — rebooted, unplugged —
+    leaves a socket that looks open forever: the stream has no read timeout by
+    design, and an SSE client never writes. TCP keepalive is the one thing
+    that can tell that socket apart from a quiet one (issue #38)."""
+
+    async def hold_open(request: bytes, writer: asyncio.StreamWriter) -> None:
+        writer.write(
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Type: text/event-stream\r\n"
+            b"Connection: close\r\n\r\n"
+        )
+        await writer.drain()
+        await asyncio.sleep(0.2)
+        writer.close()
+
+    async def scenario() -> None:
+        async with FakeBridge(bridge_certs, respond=hold_open) as bridge:
+            transport = HueTransport(
+                bridge_id=BRIDGE_ID,
+                address=bridge.address,
+                ca_pem=bridge_certs.ca_pem,
+                keepalive=Keepalive(idle=7, interval=3, count=2),
+            )
+            async with (
+                transport,
+                transport.stream("GET", "/eventstream/clip/v2") as events,
+            ):
+                sock = events.extensions["network_stream"].get_extra_info("socket")
+                assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE) == 1
+                assert sock.getsockopt(socket.IPPROTO_TCP, TCP_KEEPIDLE) == 7
+                assert sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL) == 3
+                assert sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT) == 2
 
     run(scenario())
 
